@@ -8,6 +8,4 @@ node default {
     include socorro-processor
     include socorro-collector
     include socorro-api
-#    include socorro-java
-#    include socorro-hbase
 }

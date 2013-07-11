@@ -5,13 +5,6 @@
 class socorro-base {
 
     file {
-        '/etc/profile.d/java.sh':
-            owner => root,
-            group => root,
-            mode => 644,
-            ensure => present,
-            source => "/home/socorro/dev/socorro/puppet/files/etc_profile.d/java.sh";
-
         '/etc/hosts':
             owner => root,
             group => root,
