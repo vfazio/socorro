@@ -12,6 +12,7 @@ import requests
 import stat
 import time
 import urllib
+import re
 
 from django.conf import settings
 from django.core.cache import cache
@@ -66,7 +67,14 @@ class SocorroCommon(object):
     cache_seconds = 60 * 60
 
     def fetch(self, url, headers=None, method='get', data=None,
-              expect_json=True, dont_cache=False):
+              expect_json=True, dont_cache=False,
+              retries=None,
+              retry_sleeptime=None):
+
+        if retries is None:
+            retries = settings.MIDDLEWARE_RETRIES
+        if retry_sleeptime is None:
+            retry_sleeptime = settings.MIDDLEWARE_RETRY_SLEEPTIME
 
         if url.startswith('/'):
             url = self._complete_url(url)
@@ -142,7 +150,28 @@ class SocorroCommon(object):
         else:
             raise ValueError(method)
 
-        resp = request_method(url=url, auth=auth, headers=headers, data=data)
+        try:
+            resp = request_method(
+                url=url,
+                auth=auth,
+                headers=headers,
+                data=data
+            )
+        except requests.ConnectionError:
+            if not retries:
+                raise
+            # https://bugzilla.mozilla.org/show_bug.cgi?id=916886
+            time.sleep(retry_sleeptime)
+            return self.fetch(
+                url,
+                headers=headers,
+                method=method,
+                data=data,
+                expect_json=expect_json,
+                dont_cache=dont_cache,
+                retry_sleeptime=retry_sleeptime,
+                retries=retries - 1
+            )
 
         self._process_response(method, url, resp.status_code)
 
@@ -176,12 +205,23 @@ class SocorroCommon(object):
         path = urlparse.urlparse(url).path
         path_info = urllib.quote(path.encode('utf-8'))
 
+        # Removes uuids from path_info
+        if "uuid/" in url:
+            uuid = path_info.rsplit("/uuid/")
+            if len(uuid) == 2:
+                path_info = uuid[0] + '/uuid' + uuid[1][uuid[1].find('/'):]
+
+        # Replaces dates for XXXX-XX-XX
+        replaces = re.findall(r'(\d{4}-\d{2}-\d{2})', path_info)
+        for date in replaces:
+            date = path_info[path_info.find(date):].rsplit("/")[0]
+            path_info = path_info.replace(date, "XXXX-XX-XX")
+
         metric = u"middleware.{0}.{1}.{2}".format(
             method.upper(),
             path_info.lstrip('/').replace('.', '-'),
             status_code
         )
-
         metric = metric.encode('utf-8')
         statsd.incr(metric)
 
