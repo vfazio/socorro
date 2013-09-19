@@ -93,7 +93,8 @@ class BaseTestViews(TestCase):
                     {"products": [
                        "WaterWolf",
                        "NightTrain",
-                       "SeaMonkey"
+                       "SeaMonkey",
+                       "LandCrab"
                      ],
                      "hits": {
                       "WaterWolf": [
@@ -148,10 +149,28 @@ class BaseTestViews(TestCase):
                         "featured": true,
                         "version": "9.5",
                         "release": "Alpha",
-                        "id": 921}
+                        "id": 921},
+                        {"product": "SeaMonkey",
+                        "throttle": "99.00",
+                        "end_date": "%(end_date)s",
+                        "start_date": "2012-03-08T00:00:00",
+                        "featured": true,
+                        "version": "10.5",
+                        "release": "nightly",
+                        "id": 926}
+                     ],
+                     "LandCrab": [
+                        {"product": "LandCrab",
+                        "throttle": "99.00",
+                        "end_date": "%(end_date)s",
+                        "start_date": "2012-03-08T00:00:00",
+                        "featured": false,
+                        "version": "1.5",
+                        "release": "Release",
+                        "id": 927}
                      ]
                    },
-                   "total": 3
+                   "total": 4
                  }
                       """ % {'end_date': now, 'yesterday': yesterday})
             raise NotImplementedError(url)
@@ -264,6 +283,43 @@ class TestViews(BaseTestViews):
         struct = json.loads(response.content)
         ok_(struct['bugs'])
         eq_(struct['bugs'][0]['product'], 'allizom.org')
+
+    @mock.patch('requests.get')
+    def test_buginfo_with_caching(self, rget):
+        url = reverse('crashstats.buginfo')
+
+        def mocked_get(url, **options):
+            if 'bug?id=' in url:
+                return Response("""{"bugs": [
+                    {"id": "987",
+                     "product": "allizom.org",
+                     "summary": "Summary 1"},
+                    {"id": "654",
+                     "product": "mozilla.org",
+                     "summary": "Summary 2"}
+                ]}""")
+
+            raise NotImplementedError(url)
+
+        rget.side_effect = mocked_get
+
+        response = self.client.get(url, {
+            'bug_ids': '987,654',
+            'include_fields': 'product,summary'
+        })
+        eq_(response.status_code, 200)
+        struct = json.loads(response.content)
+
+        eq_(struct['bugs'][0]['product'], 'allizom.org')
+        eq_(struct['bugs'][0]['summary'], 'Summary 1')
+        eq_(struct['bugs'][0]['id'], '987')
+        eq_(struct['bugs'][1]['product'], 'mozilla.org')
+        eq_(struct['bugs'][1]['summary'], 'Summary 2')
+        eq_(struct['bugs'][1]['id'], '654')
+
+        # expect to be able to find this in the cache now
+        cache_key = 'buginfo:987'
+        eq_(cache.get(cache_key), struct['bugs'][0])
 
     @mock.patch('requests.get')
     def test_home(self, rget):
@@ -537,6 +593,9 @@ class TestViews(BaseTestViews):
     @mock.patch('requests.get')
     def test_crash_trends(self, rget):
         url = reverse('crashstats.crash_trends', args=('WaterWolf',))
+        no_nightly_url = reverse('crashstats.crash_trends', args=('LandCrab',))
+        inconsistent_case_url = reverse('crashstats.crash_trends',
+                                        args=('SeaMonkey',))
         unkown_product_url = reverse('crashstats.crash_trends',
                                      args=('NotKnown',))
 
@@ -567,6 +626,19 @@ class TestViews(BaseTestViews):
 
         response = self.client.get(unkown_product_url)
         eq_(response.status_code, 404)
+
+        # This used to cause a 500 because there is no Nightly associated
+        # with this product, should 200 now.
+        response = self.client.get(no_nightly_url)
+        eq_(response.status_code, 200)
+        ok_('Nightly Crash Trends For LandCrab' in response.content)
+
+        # This used to cause a 500 because of inconsistent case for
+        # release names in the DB, causing some releases to be returned
+        # as 'nightly' instead of 'Nightly'. This should now return 200.
+        response = self.client.get(inconsistent_case_url)
+        eq_(response.status_code, 200)
+        ok_('Nightly Crash Trends For SeaMonkey' in response.content)
 
     @mock.patch('requests.get')
     def test_crashtrends_versions_json(self, rget):
@@ -660,7 +732,7 @@ class TestViews(BaseTestViews):
 
         # Test with product that does not have a nightly
         response = self.client.get(url, {
-            'product': 'SeaMonkey',
+            'product': 'LandCrab',
             'version': '9.5',
             'start_date': '2012-10-01',
             'end_date': '2012-10-10'
@@ -668,7 +740,7 @@ class TestViews(BaseTestViews):
         ok_(response.status_code, 400)
         ok_('text/html' in response['content-type'])
         ok_(
-            'SeaMonkey is not one of the available choices'
+            'LandCrab is not one of the available choices'
             in response.content
         )
 
