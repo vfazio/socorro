@@ -1086,6 +1086,23 @@ def report_list(request, partial=None, default_context=None):
     results_per_page = 250
     result_offset = results_per_page * (page - 1)
 
+    ALL_REPORTS_COLUMNS = (
+        # key, label, on by default?
+        ('date_processed', 'Date', True),
+        ('duplicate_of', 'Dup', True),
+        ('product', 'Product', True),
+        ('version', 'Version', True),
+        ('build', 'Build', True),
+        ('os_and_version', 'OS', True),
+        ('cpu_name', 'Build Arch', True),
+        ('reason', 'Reason', True),
+        ('address', 'Address', True),
+        ('crash_type', 'Crash Type', True),
+        ('uptime', 'Uptime', True),
+        ('install_time', 'Install Time', True),
+        ('comments', 'Comments', True),
+    )
+
     if partial == 'reports':
         api = models.ReportList()
         context['report_list'] = api.get(
@@ -1126,6 +1143,19 @@ def report_list(request, partial=None, default_context=None):
 
         context['report_list']['total_count'] = context['report_list']['total']
 
+        columns = request.GET.getlist('c')
+        # these are the columns used to render the table in reports.html
+        context['columns'] = []
+        for value, label, default in ALL_REPORTS_COLUMNS:
+            if (not columns and default) or value in columns:
+                context['columns'].append({
+                    'value': value,
+                    'label': label,
+                })
+        context['columns_values_joined'] = ','.join(
+            x['value'] for x in context['columns']
+        )
+
     if partial == 'correlations':
         os_count = defaultdict(int)
         version_count = defaultdict(int)
@@ -1165,25 +1195,35 @@ def report_list(request, partial=None, default_context=None):
                 report['install_time']
             ).strftime('%Y-%m-%d %H:%M:%S')
 
-        correlation_os = max(os_count.iterkeys(), key=lambda k: os_count[k])
+        if os_count:
+            correlation_os = max(os_count.iterkeys(),
+                                 key=lambda k: os_count[k])
+        else:
+            correlation_os = None
         context['correlation_os'] = correlation_os
 
-        correlation_version = max(version_count.iterkeys(),
-                                  key=lambda k: version_count[k])
+        if version_count:
+            correlation_version = max(version_count.iterkeys(),
+                                      key=lambda k: version_count[k])
+        else:
+            correlation_version = None
         if correlation_version is None:
             correlation_version = ''
         context['correlation_version'] = correlation_version
 
         correlations_api = models.CorrelationsSignatures()
         total_correlations = 0
-        for report_type in settings.CORRELATION_REPORT_TYPES:
-            correlations = correlations_api.get(report_type=report_type,
-                                                product=context['product'],
-                                                version=correlation_version,
-                                                platforms=correlation_os)
-            hits = correlations['hits'] if correlations else []
-            if context['signature'] in hits:
-                total_correlations += 1
+        if correlation_version and correlation_os:
+            for report_type in settings.CORRELATION_REPORT_TYPES:
+                correlations = correlations_api.get(
+                    report_type=report_type,
+                    product=context['product'],
+                    version=correlation_version,
+                    platforms=correlation_os
+                )
+                hits = correlations['hits'] if correlations else []
+                if context['signature'] in hits:
+                    total_correlations += 1
         context['total_correlations'] = total_correlations
 
     versions = []
@@ -1275,6 +1315,13 @@ def report_list(request, partial=None, default_context=None):
                 match_total += 1
 
         context['bugsig_match_total'] = match_total
+
+    if not partial:
+        # prep it so it's nicer to work with in the template
+        context['all_reports_columns'] = [
+            {'value': x[0], 'label': x[1], 'default': x[2]}
+            for x in ALL_REPORTS_COLUMNS
+        ]
 
     if partial == 'graph':
         tmpl = 'crashstats/partials/graph.html'
