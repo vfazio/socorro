@@ -28,12 +28,12 @@ INSTALLED_APPS = list(INSTALLED_APPS) + [
     'waffle',
 ]
 
-
 # Because Jinja2 is the default template loader, add any non-Jinja templated
 # apps here:
 JINGO_EXCLUDE_APPS = [
     'admin',
     'registration',
+    'browserid',
 ]
 
 MIDDLEWARE_EXCLUDE_CLASSES = [
@@ -49,7 +49,6 @@ for app in MIDDLEWARE_EXCLUDE_CLASSES:
 MIDDLEWARE_CLASSES = tuple(MIDDLEWARE_CLASSES) + (
     'django_statsd.middleware.GraphiteRequestTimingMiddleware',
     'django_statsd.middleware.GraphiteMiddleware',
-    'crashstats.crashstats.middleware.AnalyticsMiddleware',
     'waffle.middleware.WaffleMiddleware',
 )
 
@@ -59,13 +58,14 @@ STATSD_CLIENT = 'django_statsd.clients.normal'
 
 # BrowserID configuration
 AUTHENTICATION_BACKENDS = [
-    'django_browserid.auth.BrowserIDBackend',
     'django.contrib.auth.backends.ModelBackend',
+    'django_browserid.auth.BrowserIDBackend',
 ]
 
 TEMPLATE_CONTEXT_PROCESSORS += (
-    'django_browserid.context_processors.browserid_form',
+    'django_browserid.context_processors.browserid',
     'django.core.context_processors.request',
+    'crashstats.base.context_processors.google_analytics',
 )
 
 # Always generate a CSRF token for anonymous users.
@@ -121,7 +121,7 @@ CACHE_MIDDLEWARE_FILES = False  # store on filesystem instead of cache server
 # Some products have a different name in bugzilla and Socorro.
 BUG_PRODUCT_MAP = {
     'FennecAndroid': 'Firefox for Android',
-    'B2G': 'Boot2Gecko',
+    'B2G': 'Firefox OS',
 }
 
 # Link to source if possible
@@ -165,13 +165,7 @@ COMPRESS_OFFLINE = False
 # django re-write of Socorro.
 PERMANENT_LEGACY_REDIRECTS = True
 
-# This is needed for BrowserID to work!
-SITE_URL = 'http://localhost:8000'
-
 LOGIN_URL = '/login/'
-ALLOWED_PERSONA_EMAILS = (
-    # fill this in in settings/local.py
-)
 
 # Use memcached for session storage
 SESSION_ENGINE = 'django.contrib.sessions.backends.cached_db'
@@ -233,27 +227,20 @@ PLUGIN_FIELDS = (
     'name',
 )
 
+# the number of result filter on tcbs
+TCBS_RESULT_COUNTS = (
+    '50',
+    '100',
+    '200',
+    '300'
+)
+
 # this is the max length of signatures in forms
 SIGNATURE_MAX_LENGTH = 255
 
 # We use django.contrib.messages for login, so let's use SessionStorage
 # to avoid byte-big messages as cookies
 MESSAGE_STORAGE = 'django.contrib.messages.storage.session.SessionStorage'
-
-# LDAP related settings
-# feel free to override these in settings/local.py
-LDAP_SERVER_URI = 'ldap://pm-ns.mozilla.org'
-# search base where querys start
-LDAP_SEARCH_BASE_USER = 'dc=mozilla'
-LDAP_SEARCH_BASE_GROUP = 'ou=groups,dc=mozilla'
-# groups you must belong to to be able log in
-LDAP_GROUP_NAMES = ['CrashReportsAdmin']
-# list of group queries that is intersected wih the `LDAP_GROUP_NAMES` search
-LDAP_GROUP_QUERIES = [
-    'mail=%(mail)s,o=com,dc=mozilla',
-    'mail=%(mail)s,o=org,dc=mozilla',
-    'mail=%(mail)s,o=net,dc=mozilla',
-]
 
 
 # A prefix that is sometimes prefixed on the crash ID when used elsewhere in
@@ -292,3 +279,9 @@ MIDDLEWARE_RETRY_SLEEPTIME = 3
 
 # how many times to re-attempt on ConnectionError after some sleep
 MIDDLEWARE_RETRIES = 10
+
+# Overridden so we can control the redirects better
+BROWSERID_VERIFY_CLASS = '%s.auth.views.CustomBrowserIDVerify' % PROJECT_MODULE
+
+# For a more friendly Persona pop-up
+BROWSERID_REQUEST_ARGS = {'siteName': 'Mozilla Crash Reports'}

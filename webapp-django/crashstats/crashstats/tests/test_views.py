@@ -8,6 +8,8 @@ import shutil
 import tempfile
 import urllib
 
+import pyquery
+
 from cStringIO import StringIO
 from nose.tools import eq_, ok_
 from nose.plugins.skip import SkipTest
@@ -16,12 +18,19 @@ from django.test.client import RequestFactory
 from django.test.utils import override_settings
 from django.conf import settings
 from django.contrib.auth import REDIRECT_FIELD_NAME
-from django.contrib.auth.models import User
+from django.contrib.auth.models import (
+    User,
+    AnonymousUser,
+    Group,
+    Permission
+)
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.core.urlresolvers import reverse
+from django.contrib.contenttypes.models import ContentType
 
 from crashstats.crashstats import models
+from crashstats.crashstats.management import PERMISSIONS
 
 
 class Response(object):
@@ -185,8 +194,64 @@ class BaseTestViews(TestCase):
         cache.clear()
 
     def _login(self):
-        User.objects.create_user('test', 'test@mozilla.com', 'secret')
+        user = User.objects.create_user('test', 'test@mozilla.com', 'secret')
         assert self.client.login(username='test', password='secret')
+        return user
+
+    def _logout(self):
+        self.client.logout()
+
+    def _create_group_with_permission(self, codename, group_name='Group'):
+        appname = 'crashstats'
+        ct, __ = ContentType.objects.get_or_create(
+            model='',
+            app_label=appname,
+            defaults={'name': appname}
+        )
+        permission, __ = Permission.objects.get_or_create(
+            codename=codename,
+            name=PERMISSIONS[codename],
+            content_type=ct
+        )
+        group, __ = Group.objects.get_or_create(
+            name=group_name,
+        )
+        group.permissions.add(permission)
+        return group
+
+
+class TestGoogleAnalytics(BaseTestViews):
+
+    @override_settings(GOOGLE_ANALYTICS_ID='xyz123')
+    @mock.patch('requests.get')
+    def test_google_analytics(self, rget):
+        url = reverse('crashstats.home', args=('WaterWolf',))
+
+        def mocked_get(url, **options):
+            if 'products' in url:
+                return Response("""
+                    {
+                        "hits": [{
+                            "is_featured": true,
+                            "throttle": 100.0,
+                            "end_date": "2012-11-27",
+                            "product": "WaterWolf",
+                            "build_type": "Nightly",
+                            "version": "19.0",
+                            "has_builds": true,
+                            "start_date": "2012-09-25"
+                        }],
+                        "total": 1
+                    }
+                """)
+
+            raise NotImplementedError(url)
+
+        rget.side_effect = mocked_get
+
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('xyz123' in response.content)
 
 
 class TestViews(BaseTestViews):
@@ -210,8 +275,7 @@ class TestViews(BaseTestViews):
         # to make a mock call to the django view functions you need a request
         fake_request = RequestFactory().request(**{'wsgi.input': None})
         # Need a fake user for the persona bits on crashstats_base
-        fake_request.user = {}
-        fake_request.user['is_active'] = False
+        fake_request.user = AnonymousUser()
 
         # the reason for first causing an exception to be raised is because
         # the handler500 function is only called by django when an exception
@@ -754,6 +818,11 @@ class TestViews(BaseTestViews):
                       args=('WaterWolf', '19.0'))
         has_builds_url = reverse('crashstats.topcrasher',
                                  args=('WaterWolf', '19.0', 'build'))
+        reports_count_default = reverse('crashstats.topcrasher',
+                                        args=('WaterWolf', '19.0'))
+        reports_count_100 = reverse('crashstats.topcrasher',
+                                    args=('WaterWolf', '19.0', None, None,
+                                          None, '100'))
         response = self.client.get(no_version_url)
         ok_(url in response['Location'])
 
@@ -827,6 +896,18 @@ class TestViews(BaseTestViews):
         response = self.client.get(has_builds_url)
         eq_(response.status_code, 200)
         ok_('By Build Date' in response.content)
+
+        response = self.client.get(reports_count_default)
+        eq_(response.status_code, 200)
+        doc = pyquery.PyQuery(response.content)
+        selected_count = doc('.tc-result-count a[class="selected"]')
+        eq_(selected_count.text(), '50')
+
+        response = self.client.get(reports_count_100)
+        eq_(response.status_code, 200)
+        doc = pyquery.PyQuery(response.content)
+        selected_count = doc('.tc-result-count a[class="selected"]')
+        eq_(selected_count.text(), '100')
 
         # also, render the CSV
         response = self.client.get(url, {'format': 'csv'})
@@ -980,6 +1061,10 @@ class TestViews(BaseTestViews):
         response = self.client.get(url)
         ok_(response.status_code, 200)
 
+        # if you try to mess with the paginator it should just load page 1
+        response = self.client.get(url, {'page': 'meow'})
+        ok_(response.status_code, 200)
+
     @mock.patch('requests.get')
     def test_daily(self, rget):
         url = reverse('crashstats.daily')
@@ -1110,6 +1195,14 @@ class TestViews(BaseTestViews):
             ])
         first_row = rows[1]
         eq_(first_row[0], '2012-09-23')
+
+        # Test dates don't cause problems
+        response = self.client.get(url, {
+            'p': 'WaterWolf',
+            'v': ['20.0', '19.0'],
+            'date_start': '2010-01-01'
+        })
+        eq_(response.status_code, 200)
 
     @mock.patch('crashstats.crashstats.models.Platforms')
     @mock.patch('requests.get')
@@ -1737,9 +1830,10 @@ class TestViews(BaseTestViews):
             in response.content)
         ok_('value="days" selected' in response.content)
 
-        # Test an out-of-range date range for an admin user
-
-        self._login()
+        # Test an out-of-range date range for a logged in user
+        user = self._login()
+        user.is_superuser = True
+        user.save()
 
         response = self.client.get(url, {
             'query': 'js::',
@@ -2244,7 +2338,10 @@ class TestViews(BaseTestViews):
         # for example,
         eq_(struct['uptimeRange'][0]['percentage'], '48.44')
 
-        self._login()
+        user = self._login()
+        group = self._create_group_with_permission('view_exploitability')
+        user.groups.add(group)
+
         response = self.client.get(url, {'range_value': '1',
                                          'signature': 'sig',
                                          'version': 'WaterWolf:19.0'})
@@ -2479,6 +2576,7 @@ class TestViews(BaseTestViews):
         dump = "OS|Mac OS X|10.6.8 10K549\\nCPU|amd64|family 6 mod"
         comment0 = "This is a comment\\nOn multiple lines"
         comment0 += "\\npeterbe@mozilla.com"
+        comment0 += "\\nwww.p0rn.com"
         email0 = "some@emailaddress.com"
         url0 = "someaddress.com"
 
@@ -2567,6 +2665,7 @@ class TestViews(BaseTestViews):
             comment0
             .replace('\\n', '<br>')
             .replace('peterbe@mozilla.com', '(email removed)')
+            .replace('www.p0rn.com', '(URL removed)')
         )
         ok_(comment_transformed in response.content)
         # but the email should have been scrubbed
@@ -2579,7 +2678,11 @@ class TestViews(BaseTestViews):
         )
 
         # the email address will appear if we log in
-        self._login()
+        user = self._login()
+        group = self._create_group_with_permission('view_pii')
+        user.groups.add(group)
+        assert user.has_perm('crashstats.view_pii')
+
         response = self.client.get(url)
         ok_('peterbe@mozilla.com' in response.content)
         ok_(email0 in response.content)
@@ -2967,6 +3070,30 @@ class TestViews(BaseTestViews):
         eq_(response.status_code, 200)
         ok_('Crash Reports for sig' in response.content)
 
+    def test_report_list_columns_offered(self):
+        url = reverse('crashstats.report_list')
+        response = self.client.get(url, {'signature': 'sig'})
+        eq_(response.status_code, 200)
+        # The "user_comments" field is a choice
+        ok_('<option value="user_comments">' in response.content)
+        # The "URL" field is not a choice
+        ok_('<option value="URL">' not in response.content)
+
+        # also, all fields in models.RawCrash.API_WHITELIST should
+        # be there
+        for field in models.RawCrash.API_WHITELIST:
+            html = '<option value="%s">' % field
+            ok_(html in response.content)
+
+        # but it's different if you're logged in
+        user = self._login()
+        group = self._create_group_with_permission('view_pii')
+        user.groups.add(group)
+        response = self.client.get(url, {'signature': 'sig'})
+        eq_(response.status_code, 200)
+        ok_('<option value="user_comments">' in response.content)
+        ok_('<option value="URL">' in response.content)
+
     @mock.patch('requests.get')
     def test_report_list_partial_correlations(self, rget):
 
@@ -3154,7 +3281,9 @@ class TestViews(BaseTestViews):
         ok_('Must be signed in to see signature URLs' in response.content)
         ok_('http://farm.ville' not in response.content)
 
-        self._login()
+        user = self._login()
+        group = self._create_group_with_permission('view_pii')
+        user.groups.add(group)
         response = self.client.get(url, {
             'signature': 'sig',
             'range_value': 3
@@ -3200,7 +3329,9 @@ class TestViews(BaseTestViews):
         ok_('bob@uncle.com' not in response.content)
         ok_('cheese@email.com' not in response.content)
 
-        self._login()
+        user = self._login()
+        group = self._create_group_with_permission('view_pii')
+        user.groups.add(group)
         response = self.client.get(url, {
             'signature': 'sig',
             'range_value': 3
@@ -3358,6 +3489,86 @@ class TestViews(BaseTestViews):
         ok_('x86' not in response.content)
         # 'os_and_version' not in _columns
         ok_('Mac OS X' in response.content)
+
+    @mock.patch('requests.get')
+    def test_report_list_partial_reports_with_rawcrash(self, rget):
+
+        def mocked_get(url, **options):
+            if 'report/list/' in url:
+                return Response("""
+                {
+                  "hits": [
+                    {
+                      "user_comments": null,
+                      "product": "WaterWolf",
+                      "os_name": "Linux",
+                      "uuid": "441017f4-e006-4eea-8451-dc20e0120905",
+                      "cpu_info": "...",
+                      "url": "http://example.com/116",
+                      "last_crash": 1234,
+                      "date_processed": "2012-09-05T21:18:58+00:00",
+                      "cpu_name": "x86",
+                      "uptime": 1234,
+                      "process_type": "browser",
+                      "hangid": null,
+                      "reason": "reason7",
+                      "version": "5.0a1",
+                      "os_version": "1.2.3.4",
+                      "build": "20120901000007",
+                      "install_age": 1234,
+                      "signature": "FakeSignature2",
+                      "install_time": "2012-09-05T20:58:24+00:00",
+                      "address": "0xdeadbeef",
+                      "duplicate_of": null,
+                      "raw_crash": {
+                          "Winsock_LSP": "Peter",
+                          "SecondsSinceLastCrash": "Bengtsson"
+                      }
+                    },
+                    {
+                      "user_comments": null,
+                      "product": "WaterWolf",
+                      "os_name": "Mac OS X",
+                      "uuid": "e491c551-be0d-b0fb-c69e-107380120905",
+                      "cpu_info": "...",
+                      "url": "http://example.com/60053",
+                      "last_crash": 1234,
+                      "date_processed": "2012-09-05T21:18:58+00:00",
+                      "cpu_name": "x86",
+                      "uptime": 1234,
+                      "process_type": "content",
+                      "hangid": null,
+                      "reason": "reason7",
+                      "version": "5.0a1",
+                      "os_version": "1.2.3.4",
+                      "build": "20120822000007",
+                      "install_age": 1234,
+                      "signature": "FakeSignature2",
+                      "install_time": "2012-09-05T20:58:24+00:00",
+                      "address": "0xdeadbeef",
+                      "duplicate_of": null,
+                      "raw_crash": null
+                    }
+                    ],
+                    "total": 2
+                    }
+                """)
+            raise NotImplementedError(url)
+
+        rget.side_effect = mocked_get
+
+        url = reverse('crashstats.report_list_partial', args=('reports',))
+        response = self.client.get(url, {
+            'signature': 'sig',
+            'range_value': 3,
+            'c': ['date_processed', 'Winsock_LSP', 'SecondsSinceLastCrash']
+        })
+        eq_(response.status_code, 200)
+        ok_('Peter' in response.content)
+        ok_('Bengtsson' in response.content)
+        # and also the table headers should be there
+        ok_('Winsock_LSP*' in response.content)
+        ok_('SecondsSinceLastCrash*' in response.content)
 
     @mock.patch('requests.get')
     def test_report_list_partial_reports_page_2(self, rget):
@@ -3850,7 +4061,6 @@ class TestViews(BaseTestViews):
 
     @mock.patch('requests.get')
     def test_raw_data(self, rget):
-
         def mocked_get(url, **options):
             assert '/crash_data/' in url
             if '/datatype/raw/' in url:
@@ -3869,9 +4079,17 @@ class TestViews(BaseTestViews):
         crash_id = '176bcd6c-c2ec-4b0c-9d5f-dadea2120531'
         json_url = reverse('crashstats.raw_data', args=(crash_id, 'json'))
         response = self.client.get(json_url)
-        eq_(response.status_code, 403)
+        self.assertRedirects(
+            response,
+            reverse('crashstats.login') + '?next=%s' % json_url
+        )
+        eq_(response.status_code, 302)
 
-        self._login()
+        user = self._login()
+        group = self._create_group_with_permission('view_rawdump')
+        user.groups.add(group)
+        assert user.has_perm('crashstats.view_rawdump')
+
         response = self.client.get(json_url)
         eq_(response.status_code, 200)
         eq_(response['Content-Type'], 'application/json')
@@ -4221,3 +4439,49 @@ class TestViews(BaseTestViews):
         url = reverse('crashstats.login')
         response = self.client.get(url)
         eq_(response.status_code, 200)
+        ok_('Login Required' in response.content)
+        ok_('Insufficient Privileges' not in response.content)
+
+        self._login()
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Login Required' not in response.content)
+        ok_('Insufficient Privileges' in response.content)
+
+    def test_your_permissions_page(self):
+        url = reverse('crashstats.permissions')
+        response = self.client.get(url)
+        eq_(response.status_code, 302)
+        self.assertRedirects(
+            response,
+            reverse('crashstats.login') + '?next=%s' % url
+        )
+        user = self._login()
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_(user.email in response.content)
+
+        # make some groups and attach permissions
+        self._create_group_with_permission(
+            'view_pii', 'Group A'
+        )
+        groupB = self._create_group_with_permission(
+            'view_exploitability', 'Group B'
+        )
+        user.groups.add(groupB)
+        assert not user.has_perm('crashstats.view_pii')
+        assert user.has_perm('crashstats.view_exploitability')
+
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_(PERMISSIONS['view_pii'] in response.content)
+        ok_(PERMISSIONS['view_exploitability'] in response.content)
+        doc = pyquery.PyQuery(response.content)
+        for row in doc('table.permissions tbody tr'):
+            cells = []
+            for td in doc('td', row):
+                cells.append(td.text.strip())
+            if cells[0] == PERMISSIONS['view_pii']:
+                eq_(cells[1], 'No')
+            elif cells[0] == PERMISSIONS['view_exploitability']:
+                eq_(cells[1], 'Yes!')

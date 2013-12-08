@@ -14,6 +14,7 @@ from socorro.collector.submitter_app import (
 )
 from configman.dotdict import DotDict
 from socorro.external.postgresql import dbapi2_util
+from socorro.external.crashstorage_base import Redactor
 
 
 #------------------------------------------------------------------------------
@@ -33,6 +34,8 @@ class TestSubmitterFileSystemWalkerSource(unittest.TestCase):
         config.search_root = None
         config.dump_suffix = '.dump'
         config.dump_field = "upload_file_minidump"
+        config.redactor_class = Redactor
+        config.forbidden_keys = Redactor.required_config.forbidden_keys.default
 
         config.logger = mock.MagicMock()
 
@@ -190,7 +193,6 @@ class TestDBSamplingCrashSource(unittest.TestCase):
 
         raw_dumps_as_files = \
             db_sampling._implementation.get_raw_dumps_as_files(crash_id)
-        print raw_dumps_as_files
         self.assertTrue(isinstance(raw_dumps_as_files, dict))
         self.assertEqual(raw_dumps_as_files['upload_file_minidump'],
                          '86b58ff2-9708-487d-bfc4-9dac32121214.' \

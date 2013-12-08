@@ -2,26 +2,9 @@
 
 {% block site_css %}
   {{ super() }}
-  <style type="text/css">
-   #buildid-outer {
-       display: none;
-   }
-   .loading-failed {
-       color: red;
-       display: none;
-       font-weight: bold;
-   }
-   #reports form table td,
-   #reports form table th {
-       border: 0px solid white;;
-   }
-   #reports button.disabled {
-       opacity: 0.3;
-   }
-   #reports p.reports-form-hint {
-       float: left;
-   }
-  </style>
+  {% compress css %}
+  <link media="screen" href="{{ static('crashstats/css/report_list.less') }}" type="text/less" rel="stylesheet" />
+  {% endcompress %}
   {% compress css %}
   <link media="screen" href="{{ static('crashstats/css/flora/flora.css') }}" type="text/css" rel="stylesheet">
   <link media="screen" href="{{ static('crashstats/css/flora/flora.tabs.css') }}" type="text/css" rel="stylesheet">
@@ -40,7 +23,7 @@
         <li><a href="#bugzilla"><span>Bugzilla</span></a></li>
         <li><a href="#comments"><span>Comments</span></a></li>
         <li><a id="correlations-report-list" href="#correlations"><span>Correlations</span></a></li>
-        {% if request.user.is_active %}
+        {% if request.user.has_perm('crashstats.view_pii') %}
         <li><a href="#sigurls"><span>URLs</span></a></li>
         {% endif %}
     </ul>

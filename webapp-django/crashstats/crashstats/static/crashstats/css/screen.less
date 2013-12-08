@@ -60,6 +60,9 @@ p {
     margin: 1em 0 1em 0;
     font-weight: normal;
 }
+em {
+    font-style: italic;
+}
 .bold {
     font-weight: bold;
 }
@@ -512,6 +515,9 @@ html.production {
     a:hover {
         text-decoration: underline;
     }
+    a.persona-button {
+        color: #FFF;
+    }
     .nav {
         float: left;
         background: url(../../img/2.0/mozilla.png) no-repeat left top;
@@ -960,9 +966,6 @@ a.correlation-toggler {
 .non-hang {
     width: 40px
 }
-.graph-icon {
-    visibility: hidden;
-}
 a.open-external {
     background: url(/img/icons/external.png) no-repeat scroll left top transparent;
     color: #0A2533;
@@ -1083,55 +1086,6 @@ td.in2 {
         font-weight: bold;
     }
 }
-/* duration and os selectors on top crashers */
-.tc-duration-heading,
-.tc-per-platform-heading {
-    margin-right: .7em;
-    font-weight: bold;
-}
-.tc-duration-type,
-.tc-per-platform {
-    float: left;
-    margin: 0.3em 1em 1em 0;
-    padding: 0;
-    a {
-        min-width: 65px;
-    }
-    li {
-        display: inline;
-    }
-}
-.tc-duration-days {
-    float: left;
-    margin: 0.3em 1em 1em 0;
-    padding: 0;
-    a {
-        min-width: 30px;
-    }
-    li {
-        display: inline;
-    }
-}
-.tc-filter {
-    a:link,
-    a:visited {
-        display: inline-block;
-        background-color: #e0e0e0;
-        color: #333;
-        margin-right: .2em;
-        padding: .3em;
-        text-decoration: none;
-        text-align: center;
-        .rounded-corners(6px);
-    }
-    a:hover {
-        background-color: #B6D3E2;
-    }
-    a.selected {
-        background-color: #2e5d74;
-        color: #fff;
-    }
-}
 #duration-nav {
     float: right;
     ul {
@@ -1147,39 +1101,11 @@ td.in2 {
     button {
         float: right;
     }
-}
-.sig-history-graph {
-    float: left;
-    display: none;
-    width: 400px;
-    height: 100px;
-}
-.sig-history-legend {
-    margin-top: 1em;
-    width: 1em;
-    tbody {
-        tr {
-            td {
-                border: 0;
-            }
-        }
+    td {
+        width: 4%;
     }
-}
-.graph-close {
-    position: relative;
-    top: -10px;
-    display: inline-block;
-    margin: 0;
-    width: 400px;
-    height: 5px;
-    text-align: right;
-    a {
-        color: #333;
-        padding: 2px 5px 2px 5px;
-        border: 1px solid #333;
-        font-weight: bold;
-        text-decoration: none;
-        .rounded-corners(5px);
+    td.signature-column {
+        width: 32%;
     }
 }
 div.expandable-menu,

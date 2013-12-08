@@ -13,21 +13,24 @@ Socorro is a set of components for collecting, processing and reporting on crash
 The components which make up Socorro are:
 
 * Collector - collects breakpad minidump crashes which come in over HTTP POST
-* Monitor - watch for incoming crashes, feed to processor
 * Processor - turn breakpad minidump crashes into stack traces and other info
-* Middleware - provide HTTP REST interface for JSON reports and real-time crash data
-* Web UI aka crash-stats - django-based web app for visualizing and reporting on crash data
+* Middleware - provide HTTP REST interface for JSON reports and real-time data
+* Web UI aka crash-stats - django-based web app for visualizing crash data
 
-There are two main parts to Socorro:
+There are two main functions of Socorro:
 
-1) collects, processes, and allows real-time searches and results for individual crash reports
+1) collect, process, and allow for real-time searches and results for individual crash reports
 
-  This requires both PostgreSQL, as well as the Collector, Monitor, Processor and Middleware and Web UI.
+  This requires both RabbitMQ and PostgreSQL, as well as the Collector,
+  Processor and Middleware and Web UI.
 
   Individual crash reports are pulled from long-term storage using the
   /report/index/ page, for example: https://crash-stats.mozilla.com/report/index/ba8c248f-79ff-46b4-97b8-a33362121113
 
   The search feature is at: https://crash-stats.mozilla.com/query
+  There is a new version which uses Elastic Search and will eventually replace
+  the above:
+  https://crash-stats.mozilla.com/search/
 
 2) a set of batch jobs which compiles aggregate reports and graphs, such as "Top Crashes by Signature"
 
@@ -49,8 +52,9 @@ Installation Requirements
 
 * Mac OS X or Linux (Ubuntu/RHEL)
 * PostgreSQL 9.3
+* RabbitMQ 3.1
 * Python 2.6
-* C++ compiler
+* C++ compiler (GCC 4.6 or greater)
 * Subversion
 * Git
 * PostrgreSQL and Python dev libraries (for psycopg2)
@@ -66,7 +70,7 @@ Install dependencies
 ::
   brew update
   brew tap homebrew/versions
-  brew install python26 git gpp postgresql subversion
+  brew install python26 git gpp postgresql subversion rabbitmq
   sudo easy_install virtualenv virtualenvwrapper pip
   sudo pip-2.7 install docutils
   brew install mercurial
@@ -106,7 +110,9 @@ Create the file /etc/apt/sources.list.d/pgdg.list:
 ::
   deb http://apt.postgresql.org/pub/repos/apt/ precise-pgdg main
 
-wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+Add the public key for the PostgreSQL Apt Repository:
+::
+  wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
   sudo apt-key add -
 
 Install dependencies
@@ -115,7 +121,7 @@ Install dependencies
   # needed for python2.6
   sudo add-apt-repository ppa:fkrull/deadsnakes
   sudo apt-get update
-  sudo apt-get install build-essential subversion libpq-dev python-virtualenv python-dev postgresql-9.3 postgresql-plperl-9.3 postgresql-contrib-9.3 postgresql-server-dev-9.3 rsync python2.6 python2.6-dev libxslt1-dev git-core mercurial
+  sudo apt-get install build-essential subversion libpq-dev python-virtualenv python-dev postgresql-9.3 postgresql-plperl-9.3 postgresql-contrib-9.3 postgresql-server-dev-9.3 rsync python2.6 python2.6-dev libxslt1-dev git-core mercurial rabbitmq-server
 
 Modify postgresql config
 ::
@@ -133,23 +139,35 @@ Restart PostgreSQL to activate config changes, if the above was changed
 RHEL/CentOS 6
 ````````````
 
-Install [epel repository](http://fedoraproject.org/wiki/EPEL)
+Install `EPEL repository <http://fedoraproject.org/wiki/EPEL>`_
 ::
   rpm -ivh http://dl.fedoraproject.org/pub/epel/6/i386/epel-release-6-8.noarch.rpm
 
-Install [pgdg repository](http://yum.pgrpms.org/)
+Install `PGDG repository <http://yum.pgrpms.org/>`_
 ::
   rpm -ivh http://yum.pgrpms.org/9.3/redhat/rhel-6-i386/pgdg-centos93-9.3-1.noarch.rpm
 
-Install [elastic search](http://www.elasticsearch.org/)
+Install `Elastic Search repository <http://www.elasticsearch.org/>`_
 ::
   rpm -ivh 'https://download.elasticsearch.org/elasticsearch/elasticsearch/elasticsearch-0.90.4.noarch.rpm'
+
+Install `Devtools 1.1 repository <http://people.centos.org/tru/devtools-1.1/readme>`_, needed for stackwalker
+::
+  wget http://people.centos.org/tru/devtools-1.1/devtools-1.1.repo -O /etc/yum.repos.d/devtools-1.1.repo
 
 Install dependencies
 
 As the *root* user:
 ::
-  yum install postgresql93-server postgresql93-plperl postgresql93-contrib postgresql93-devel subversion make rsync subversion gcc-c++ python-devel python-pip mercurial git libxml2-devel libxslt-devel java-1.7.0-openjdk python-virtualenv openldap-devel npm
+  yum install postgresql93-server postgresql93-plperl postgresql93-contrib postgresql93-devel subversion make rsync subversion gcc-c++ python-devel python-pip mercurial git libxml2-devel libxslt-devel java-1.7.0-openjdk python-virtualenv npm devtoolset-1.1-gcc-c++ rabbitmq-server
+
+Initialize and enable RabbitMQ on startup
+
+As the *root* user:
+::
+  service rabbitmq-server initdb
+  service rabbitmq-server start
+  chkconfig rabbitmq-server on
 
 Initialize and enable PostgreSQL on startup
 
@@ -201,6 +219,7 @@ To run and hack on Socorro apps, you will need:
 Socorro can install the dependencies into a virtualenv for you, then
 just activate it and set your PYTHONPATH
 ::
+  export PATH=$PATH:/usr/pgsql-9.3/bin/
   make bootstrap
   . socorro-virtualenv/bin/activate
   export PYTHONPATH=.
@@ -221,7 +240,7 @@ For running unit tests, you'll want a test user as well (make sure
 to remove this for production installs):
 ::
   psql template1 -c "create user test with password 'aPassword' superuser"
- 
+
 Allow local connections for PostgreSQL
 ````````````
 
@@ -264,11 +283,19 @@ From inside the Socorro checkout
   make test
 
 
-Install minidump_stackwalk
+Install stackwalker
 ````````````
-This is the binary which processes breakpad crash dumps into stack traces:
+This is the binary which processes breakpad crash dumps into stack traces.
+You must build it with GCC 4.6 or above.
+
+If you are using RHEL/CentOS and installed GCC from the devtoolset repo
+(per the installation instructions), make sure to "activate" it:
 ::
-  make minidump_stackwalk
+  scl enable devtoolset-1.1 bash
+
+Then compile breakpad and the stackwalker binary:
+::
+  make breakpad stackwalker
 
 Populate PostgreSQL Database
 ````````````
@@ -312,9 +339,9 @@ Run socorro in dev mode
 
 Copy default config files
 ::
+  cp config/alembic.ini-dist config/alembic.ini
   cp config/collector.ini-dist config/collector.ini
   cp config/processor.ini-dist config/processor.ini
-  cp config/monitor.ini-dist config/monitor.ini
   cp config/middleware.ini-dist config/middleware.ini
 
 You may need to edit these config files - for example collector (which is
@@ -325,10 +352,10 @@ Run Socorro servers - NOTE you should use different terminals for each, perhaps 
 ::
   python socorro/collector/collector_app.py --admin.conf=./config/collector.ini
   python socorro/processor/processor_app.py --admin.conf=./config/processor.ini
-  python socorro/monitor/monitor_app.py --admin.conf=./config/monitor.ini
   python socorro/middleware/middleware_app.py --admin.conf=config/middleware.ini
 
-If you want to modify something that is common across config files like PostgreSQL username/hostname/etc, make sure to see config/common_database.ini-dist and the "+include" line in the service-specific config files (such as collector.ini, processor.ini and monitor.ini). This is optional but recommended.
+If you want to modify something that is common across config files like PostgreSQL username/hostname/etc, make sure to see config/common_database.ini-dist and the "+include" line in the service-specific config files (such as collector.ini
+and processor.ini). This is optional but recommended.
 
 
 Run webapp-django in dev mode
@@ -392,7 +419,7 @@ Install production dependencies
 
 As the *root* user:
 ::
-  yum install httpd mod_wsgi memcached openldap-devel daemonize mod_ssl
+  yum install httpd mod_wsgi memcached daemonize mod_ssl
 
 Automatically run Apache and Memcached on startup
 
@@ -424,7 +451,7 @@ From inside the Socorro checkout (as the user that owns /data/socorro):
 ::
   make install
 
-By default, this installs files to /data/socorro. You can change this by 
+By default, this installs files to /data/socorro. You can change this by
 specifying the PREFIX:
 ::
   make install PREFIX=/usr/local/socorro
@@ -458,7 +485,7 @@ From inside the Socorro checkout, as the *root* user
 ::
   cp scripts/crons/socorrorc /etc/socorro/
 
-edit /etc/cron.d/socorro 
+edit /etc/cron.d/socorro
 ::
   */5 * * * * socorro /data/socorro/application/scripts/crons/crontabber.sh
 
@@ -467,22 +494,19 @@ Start daemons
 ````````````
 
 
-These consist of the crashmover, monitor and processor daemons. You can
+The processor daemon must be running. You can
 find startup scripts for RHEL/CentOS in:
 
 https://github.com/mozilla/socorro/tree/master/scripts/init.d
 
-Copy these into /etc/init.d and enable on boot:
+Copy this into /etc/init.d and enable on boot:
 
 From inside the Socorro checkout, as the *root* user
 ::
-  for service in socorro-{crashmover,monitor,processor}
-  do
-    cp scripts/init.d/$service /etc/init.d/
-    chkconfig --add $service
-    chkconfig $service on
-    service $service start
-  done
+  cp scripts/init.d/socorro-processor /etc/init.d/
+  chkconfig --add socorro-processor
+  chkconfig socorro-processor on
+  service socorro-processor start
 
 Web Services
 ````````````
@@ -525,7 +549,7 @@ finished, as the *root* user:
 Troubleshooting
 ````````````
 Socorro leaves logs in /var/log/socorro which is a good place to check
-for crontabber and backend services like crashmover and processor.
+for crontabber and backend services like processor.
 
 Socorro supports syslog and raven for application-level logging of all
 services (including web services).

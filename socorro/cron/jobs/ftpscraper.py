@@ -43,32 +43,36 @@ def urljoin(*parts):
     return url
 
 
-def getLinks(url, startswith=None, endswith=None):
-
-    html = ''
-    results = []
+def patient_urlopen(url, max_attempts=4, sleep_time=20):
     attempts = 0
     while True:
-        if attempts > 3:
+        if attempts >= max_attempts:
             raise RetriedError(attempts, url)
         try:
             attempts += 1
             page = urllib2.urlopen(url)
         except urllib2.HTTPError, err:
-            # wait half a minute
-            time.sleep(30)
             if err.code == 404:
-                return results
-            elif err.code < 500:
+                return
+            if err.code < 500:
                 raise
+            time.sleep(sleep_time)
         except urllib2.URLError, err:
-            # wait half a minute
-            time.sleep(30)
-            pass
+            time.sleep(sleep_time)
         else:
-            html = lxml.html.document_fromstring(page.read())
+            content = page.read()
             page.close()
-            break
+            return content
+
+
+def getLinks(url, startswith=None, endswith=None):
+
+    html = ''
+    results = []
+    content = patient_urlopen(url, sleep_time=30)
+    if not content:
+        return []
+    html = lxml.html.document_fromstring(content)
 
     for element, attribute, link, pos in html.iterlinks():
         if startswith:
@@ -81,12 +85,12 @@ def getLinks(url, startswith=None, endswith=None):
 
 
 def parseInfoFile(url, nightly=False):
-    infotxt = urllib2.urlopen(url)
-    content = infotxt.read()
-    contents = content.splitlines()
-    infotxt.close()
+    content = patient_urlopen(url)
     results = {}
     bad_lines = []
+    if not content:
+        return results, bad_lines
+    contents = content.splitlines()
     if nightly:
         results = {'buildID': contents[0], 'rev': contents[1]}
         if len(contents) > 2:
@@ -104,20 +108,26 @@ def parseInfoFile(url, nightly=False):
 
     return results, bad_lines
 
+
 def parseB2GFile(url, nightly=False, logger=None):
     """
       Parse the B2G manifest JSON file
-      Example: {"buildid": "20130125070201", "update_channel": "nightly", "version": "18.0"}
+      Example: {"buildid": "20130125070201", "update_channel":
+                "nightly", "version": "18.0"}
       TODO handle exception if file does not exist
     """
-    infotxt = urllib2.urlopen(url)
-    results = json.load(infotxt)
-    infotxt.close()
+    content = patient_urlopen(url)
+    if not content:
+        return
+    results = json.loads(content)
 
     # bug 869564: Return None if update_channel is 'default'
-    if results['update_channel'] == 'default':
-        logger.warning("Found default update_channel for buildid: %s. Skipping.", results['buildid'])
-        return None
+    if results['update_channel'] == 'default' and logger:
+        logger.warning(
+            "Found default update_channel for buildid: %s. Skipping.",
+            results['buildid']
+        )
+        return
 
     # Default 'null' channels to nightly
     results['build_type'] = results['update_channel'] or 'nightly'
@@ -178,6 +188,7 @@ def getNightly(dirname, url):
 
         yield (platform, repository, version, kvpairs, bad_lines)
 
+
 def getB2G(dirname, url, backfill_date=None, logger=None):
     """
      Last mile of B2G scraping, calls parseB2G on .json
@@ -219,8 +230,9 @@ class FTPScraperCronApp(PostgresBackfillCronApp):
     required_config.add_option(
         'products',
         default='firefox,mobile,thunderbird,seamonkey,b2g',
-        from_string_converter=\
-          lambda x: tuple([x.strip() for x in x.split(',') if x.strip()]),
+        from_string_converter=lambda line: tuple(
+            [x.strip() for x in line.split(',') if x.strip()]
+        ),
         doc='a comma-delimited list of URIs for each product')
 
     required_config.add_option(
@@ -228,19 +240,33 @@ class FTPScraperCronApp(PostgresBackfillCronApp):
         default='http://ftp.mozilla.org/pub/mozilla.org',
         doc='The base url to use for fetching builds')
 
+    required_config.add_option(
+        'dry_run',
+        default=False,
+        doc='Print instead of storing builds')
+
     def run(self, connection, date):
         # record_associations
         logger = self.config.logger
 
         for product_name in self.config.products:
             logger.debug('scraping %s releases for date %s',
-                product_name, date)
+                         product_name, date)
             if product_name == 'b2g':
                 self.scrapeB2G(connection, product_name, date)
             else:
                 self.scrapeReleases(connection, product_name)
                 self.scrapeNightlies(connection, product_name, date)
 
+    def _insert_build(self, cursor, *args, **kwargs):
+        if self.config.dry_run:
+            print "INSERT BUILD"
+            for arg in args:
+                print "\t", repr(arg)
+            for key in kwargs:
+                print "\t%s=" % key, repr(kwargs[key])
+        else:
+            buildutil.insert_build(cursor, *args, **kwargs)
 
     def scrapeReleases(self, connection, product_name):
         prod_url = urljoin(self.config.base_url, product_name, '')
@@ -273,7 +299,7 @@ class FTPScraperCronApp(PostgresBackfillCronApp):
                         )
                     if kvpairs.get('buildID'):
                         build_id = kvpairs['buildID']
-                        buildutil.insert_build(
+                        self._insert_build(
                             cursor,
                             product_name,
                             version,
@@ -306,7 +332,7 @@ class FTPScraperCronApp(PostgresBackfillCronApp):
                     build_type = 'Aurora'
                 if kvpairs.get('buildID'):
                     build_id = kvpairs['buildID']
-                    buildutil.insert_build(
+                    self._insert_build(
                         cursor,
                         product_name,
                         version,
@@ -323,22 +349,36 @@ class FTPScraperCronApp(PostgresBackfillCronApp):
         if not product_name == 'b2g':
             return
         cursor = connection.cursor()
-        b2g_manifests = urljoin(self.config.base_url, product_name,
-                            'manifests', 'nightly')
+        b2g_manifests = urljoin(
+            self.config.base_url,
+            product_name,
+            'manifests',
+            'nightly'
+        )
 
         dir_prefix = date.strftime('%Y-%m-%d')
         version_dirs = getLinks(b2g_manifests, startswith='1.')
         for version_dir in version_dirs:
-            prod_url = urljoin(b2g_manifests, version_dir,
-                               date.strftime('%Y'), date.strftime('%m'))
+            prod_url = urljoin(
+                b2g_manifests,
+                version_dir,
+                date.strftime('%Y'),
+                date.strftime('%m')
+            )
             nightlies = getLinks(prod_url, startswith=dir_prefix)
 
             for nightly in nightlies:
-                for info in getB2G(nightly, prod_url, backfill_date=None, logger=self.config.logger):
+                b2gs = getB2G(
+                    nightly,
+                    prod_url,
+                    backfill_date=None,
+                    logger=self.config.logger
+                )
+                for info in b2gs:
                     (platform, repository, version, kvpairs) = info
                     build_id = kvpairs['buildid']
                     build_type = kvpairs['build_type']
-                    buildutil.insert_build(
+                    self._insert_build(
                         cursor,
                         product_name,
                         version,
@@ -349,3 +389,42 @@ class FTPScraperCronApp(PostgresBackfillCronApp):
                         repository,
                         ignore_duplicates=True
                     )
+
+
+import datetime
+import sys
+from socorro.app.generic_app import main
+
+
+class _MockConnection(object):  # pragma: no cover
+    """When running the FTPScraperCronAppRunner app, it never actually
+    needs a database connection because instead of doing an insert
+    it just prints. However, it primes the connection by getting a cursor
+    out first (otherwise it'd have to do it every time in a loo[).
+    """
+
+    def cursor(self):
+        pass
+
+
+class FTPScraperCronAppRunner(FTPScraperCronApp):  # pragma: no cover
+
+    required_config = Namespace()
+    required_config.add_option(
+        'date',
+        default=datetime.datetime.utcnow(),
+        doc='Date to run for',
+        from_string_converter='socorro.lib.datetimeutil.string_to_datetime'
+    )
+
+    def __init__(self, config):
+        self.config = config
+        self.config.dry_run = True
+
+    def main(self):
+        assert self.config.dry_run
+        self.run(_MockConnection(), self.config.date)
+
+
+if __name__ == '__main__':  # pragma: no cover
+    sys.exit(main(FTPScraperCronAppRunner))

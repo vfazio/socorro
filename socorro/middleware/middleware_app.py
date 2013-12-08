@@ -23,7 +23,6 @@ from socorro.external import (
 from socorro.webapi.webapiService import JsonWebServiceBase, Timeout
 from socorro.external.filesystem.crashstorage import FileSystemCrashStorage
 from socorro.external.hbase.crashstorage import HBaseCrashStorage
-from socorro.external.postgresql.connection_context import ConnectionContext
 
 import raven
 from configman import Namespace
@@ -92,7 +91,7 @@ class BadRequest(web.webapi.HTTPError):
 
 
 #------------------------------------------------------------------------------
-def items_list_converter(values):
+def items_list_decode(values):
     """Return a list of 2-pair tuples like this:
         [('key', 'value'), ...]
     from a string like this:
@@ -101,6 +100,17 @@ def items_list_converter(values):
     assert isinstance(values, basestring)
     return [[e.strip() for e in x.split(':')]
             for x in values.split(',') if x.strip()]
+
+
+def items_list_encode(values):
+    """From a nest iterator like [['one', 'One'], ...]
+    return a string like 'one: One, ...'
+    """
+    assert isinstance(values, (list, tuple))
+    return ', '.join(
+        '%s: %s' % (one, two)
+        for (one, two) in values
+    )
 
 
 def string_to_list(input_str):
@@ -132,7 +142,8 @@ class MiddlewareApp(App):
                 'es:socorro.external.elasticsearch, '
                 'fs:socorro.external.filesystem, '
                 'http:socorro.external.http',
-        from_string_converter=items_list_converter
+        from_string_converter=items_list_decode,
+        to_string_converter=items_list_encode
     )
 
     required_config.implementations.add_option(
@@ -142,7 +153,8 @@ class MiddlewareApp(App):
                 'Correlations: http, '
                 'CorrelationsSignatures: http, '
                 'SuperSearch: es',
-        from_string_converter=items_list_converter
+        from_string_converter=items_list_decode,
+        to_string_converter=items_list_encode
     )
 
     #--------------------------------------------------------------------------
@@ -152,7 +164,8 @@ class MiddlewareApp(App):
     required_config.namespace('database')
     required_config.database.add_option(
         'database_class',
-        default=ConnectionContext,
+        default=
+            'socorro.external.postgresql.connection_context.ConnectionContext',
         from_string_converter=class_converter
     )
 
@@ -175,6 +188,18 @@ class MiddlewareApp(App):
     required_config.filesystem.add_option(
         'filesystem_class',
         default=FileSystemCrashStorage,
+        from_string_converter=class_converter
+    )
+
+    #--------------------------------------------------------------------------
+    # rabbitmq namespace
+    #     the namespace is for external implementations of the services
+    #-------------------------------------------------------------------------
+    required_config.namespace('rabbitmq')
+    required_config.rabbitmq.add_option(
+        'rabbitmq_class',
+        default=
+            'socorro.external.rabbitmq.connection_context.ConnectionContext',
         from_string_converter=class_converter
     )
 
@@ -254,15 +279,15 @@ class MiddlewareApp(App):
         from_string_converter=lambda x: json.loads(x)
     )
     required_config.webapi.add_option(
-        'channels',
+        'non_release_channels',
         default=['beta', 'aurora', 'nightly'],
-        doc='List of release channels, excluding the `release` one.',
+        doc='List of channels, excluding the `release` one.',
         from_string_converter=string_to_list
     )
     required_config.webapi.add_option(
         'restricted_channels',
         default=['beta'],
-        doc='List of release channels to restrict based on build ids.',
+        doc='List of channels to restrict based on build ids.',
         from_string_converter=string_to_list
     )
 
@@ -478,7 +503,7 @@ class ImplementationWrapper(JsonWebServiceBase):
         except ResourceNotFound, msg:
             raise web.webapi.NotFound(str(msg))
         except ResourceUnavailable, msg:
-            raise Timeout(str(msg))
+            raise Timeout()  # No message allowed in Timeout
         except Exception, msg:
             if self.context.sentry and self.context.sentry.dsn:
                 client = raven.Client(dsn=self.context.sentry.dsn)

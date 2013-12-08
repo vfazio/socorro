@@ -129,16 +129,12 @@ SECRET_KEY = 'you must change this'
 #}
 
 
-# These must be set to be able log in
-LDAP_BIND_DN = ''  # e.g. 'uid=binduser,ou=logins,dc=mozilla'
-LDAP_BIND_PASSWORD = ''
-# optionally...
-#LDAP_SERVER_URI =
-#LDAP_GROUP_NAMES =
-#LDAP_GLOBAL_OPTIONS = {...}  # e.g. `{ldap.OPT_DEBUG_LEVEL: 4095}`
-
-# if you want to debug logging in without belong to a real LDAP group...
-#DEBUG_LDAP_EMAIL_ADDRESSES = [...]  # for debugging ONLY
-
 # Specify the middleware implementation to use in the middleware
 #SEARCH_MIDDLEWARE_IMPL = 'elasticsearch'
+
+# If you intend to run with DEBUG=False, this must match the URL
+# you're using
+#SITE_URL = 'http://localhost:8000'
+
+# Optional Google Analytics ID
+#GOOGLE_ANALYTICS_ID = "UA-XXXXX-X"

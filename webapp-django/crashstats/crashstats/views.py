@@ -9,11 +9,12 @@ from collections import defaultdict
 from operator import itemgetter
 
 from django import http
+from django.contrib.auth.models import Permission
 from django.shortcuts import render, redirect
 from django.conf import settings
 from django.core.urlresolvers import reverse
 from django.utils.timezone import utc
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.core.cache import cache
 
 from session_csrf import anonymous_csrf
@@ -293,8 +294,8 @@ def explosive_data(request, signature, date, default_context=None):
 @anonymous_csrf
 @check_days_parameter([1, 3, 7, 14, 28], default=7)
 def topcrasher(request, product=None, versions=None, date_range_type=None,
-               crash_type=None, os_name=None, days=None, possible_days=None,
-               default_context=None):
+               crash_type=None, os_name=None, result_count='50', days=None,
+               possible_days=None, default_context=None):
     context = default_context or {}
 
     if product not in context['releases']:
@@ -339,6 +340,15 @@ def topcrasher(request, product=None, versions=None, date_range_type=None,
 
     context['os_name'] = os_name
 
+    # set the result counts filter in the context to use in
+    # the template. This way we avoid hardcoding it twice and
+    # have it defined in one common location.
+    context['result_counts'] = settings.TCBS_RESULT_COUNTS
+    if result_count not in context['result_counts']:
+        result_count = '50'
+
+    context['result_count'] = result_count
+
     api = models.TCBS()
     tcbs = api.get(
         product=product,
@@ -347,7 +357,7 @@ def topcrasher(request, product=None, versions=None, date_range_type=None,
         end_date=end_date,
         date_range_type=date_range_type,
         duration=(days * 24),
-        limit='300',
+        limit=result_count,
         os=os_name
     )
     signatures = [c['signature'] for c in tcbs['crashes']]
@@ -504,9 +514,13 @@ def daily(request, default_context=None):
 
     context['os_names'] = params.get('os_names')
 
-    end_date = params.get('date_end') or datetime.datetime.utcnow().date()
+    end_date = params.get('date_end') or datetime.datetime.utcnow()
+    if isinstance(end_date, datetime.datetime):
+        end_date = end_date.date()
     start_date = (params.get('date_start') or
                   end_date - datetime.timedelta(weeks=2))
+    if isinstance(start_date, datetime.datetime):
+        start_date = start_date.date()
 
     context['start_date'] = start_date.strftime('%Y-%m-%d')
     context['end_date'] = end_date.strftime('%Y-%m-%d')
@@ -827,11 +841,14 @@ def topchangers(request, product=None, versions=None,
 
 
 @pass_default_context
-@login_required
+@permission_required('crashstats.view_exploitability')
 def exploitable_crashes(request, default_context=None):
     context = default_context or {}
 
-    page = max(1, int(request.GET.get('page', 1)))
+    try:
+        page = max(1, int(request.GET.get('page', 1)))
+    except ValueError:
+        page = 1
 
     context['current_page'] = page
 
@@ -934,6 +951,17 @@ def report_index(request, crash_id, default_context=None):
 
     raw_api = models.RawCrash()
     context['raw'] = raw_api.get(crash_id=crash_id)
+
+    context['raw_keys'] = []
+    if request.user.has_perm('crashstats.view_pii'):
+        # hold nothing back
+        context['raw_keys'] = context['raw'].keys()
+    else:
+        context['raw_keys'] = [
+            x for x in context['raw']
+            if x in models.RawCrash.API_WHITELIST
+        ]
+    context['raw_keys'].sort(key=unicode.lower)
 
     if 'InstallTime' in context['raw']:
         try:
@@ -1100,10 +1128,54 @@ def report_list(request, partial=None, default_context=None):
         ('crash_type', 'Crash Type', True),
         ('uptime', 'Uptime', True),
         ('install_time', 'Install Time', True),
-        ('comments', 'Comments', True),
+        ('user_comments', 'Comments', True),
+    )
+
+    _default_column_keys = [x[0] for x in ALL_REPORTS_COLUMNS if x[2]]
+    raw_crash_fields = models.RawCrash.API_WHITELIST
+
+    if request.user.has_perm('crashstats.view_pii'):
+        # add any fields to ALL_REPORTS_COLUMNS raw_crash_fields that
+        # signed in people are allowed to see.
+        raw_crash_fields += ('URL',)
+
+    RAW_CRASH_FIELDS = sorted(
+        raw_crash_fields,
+        key=lambda x: x.lower()
+    )
+
+    all_reports_columns_keys = [x[0] for x in ALL_REPORTS_COLUMNS]
+    ALL_REPORTS_COLUMNS = tuple(
+        list(ALL_REPORTS_COLUMNS) +
+        [(x, '%s*' % x, False) for x in RAW_CRASH_FIELDS
+         if x not in all_reports_columns_keys]
     )
 
     if partial == 'reports':
+
+        columns = request.GET.getlist('c')
+        # these are the columns used to render the table in reports.html
+        context['columns'] = []
+        for key, label, default in ALL_REPORTS_COLUMNS:
+            if (not columns and default) or key in columns:
+                context['columns'].append({
+                    'key': key,
+                    'label': label,
+                })
+        context['columns_values_joined'] = ','.join(
+            x['key'] for x in context['columns']
+        )
+
+        include_raw_crash = False
+        for each in context['columns']:
+            key = each['key']
+            if key in raw_crash_fields and key not in _default_column_keys:
+                include_raw_crash = True
+                break
+
+        context['include_raw_crash'] = include_raw_crash
+
+        assert start_date and end_date
         api = models.ReportList()
         context['report_list'] = api.get(
             signature=context['signature'],
@@ -1120,9 +1192,11 @@ def report_list(request, partial=None, default_context=None):
             plugin_in=plugin_field,
             plugin_search_mode=plugin_query_type,
             plugin_terms=form.cleaned_data['plugin_query'],
+            include_raw_crash=include_raw_crash,
             result_number=results_per_page,
             result_offset=result_offset
         )
+
         current_query = request.GET.copy()
         if 'page' in current_query:
             del current_query['page']
@@ -1143,23 +1217,11 @@ def report_list(request, partial=None, default_context=None):
 
         context['report_list']['total_count'] = context['report_list']['total']
 
-        columns = request.GET.getlist('c')
-        # these are the columns used to render the table in reports.html
-        context['columns'] = []
-        for value, label, default in ALL_REPORTS_COLUMNS:
-            if (not columns and default) or value in columns:
-                context['columns'].append({
-                    'value': value,
-                    'label': label,
-                })
-        context['columns_values_joined'] = ','.join(
-            x['value'] for x in context['columns']
-        )
-
     if partial == 'correlations':
         os_count = defaultdict(int)
         version_count = defaultdict(int)
 
+        assert start_date and end_date
         api = models.ReportList()
         report_list = api.get(
             signature=context['signature'],
@@ -1267,7 +1329,7 @@ def report_list(request, partial=None, default_context=None):
 
     # signature URLs only if you're logged in
     if partial == 'sigurls':
-        if request.user.is_active:
+        if request.user.has_perm('crashstats.view_pii'):
             signatureurls_api = models.SignatureURLs()
             sigurls = signatureurls_api.get(
                 signature=context['signature'],
@@ -1423,6 +1485,17 @@ def crontabber_state_json(request):
 def login(request, default_context=None):
     context = default_context or {}
     return render(request, 'crashstats/login.html', context)
+
+
+@pass_default_context
+@login_required
+def permissions(request, default_context=None):
+    context = default_context or {}
+    context['permissions'] = (
+        Permission.objects.filter(content_type__model='')
+        .order_by('name')
+    )
+    return render(request, 'crashstats/permissions.html', context)
 
 
 @pass_default_context
@@ -1587,7 +1660,7 @@ def query(request, default_context=None):
             params['date_range_unit']
         )
 
-        if request.user.is_authenticated():
+        if request.user.is_superuser:
             # The user is an admin and is allowed to perform bigger queries
             max_query_range = settings.QUERY_RANGE_MAXIMUM_DAYS_ADMIN
             error_type = 'exceeded_maximum_date_range_admin'
@@ -1777,7 +1850,7 @@ def signature_summary(request):
     }
 
     # Only authenticated users get this report.
-    if request.user.is_authenticated():
+    if request.user.has_perm('crashstats.view_exploitability'):
         report_types['exploitability'] = 'exploitabilityScore'
 
     api = models.SignatureSummary()
@@ -1855,7 +1928,7 @@ def signature_summary(request):
         })
 
     # Only authenticated users get this report.
-    if request.user.is_authenticated():
+    if request.user.has_perm('crashstats.view_exploitability'):
         for r in result['exploitabilityScore']:
             signature_summary['exploitabilityScore'].append({
                 'report_date': r['report_date'],
@@ -1979,10 +2052,8 @@ def crashtrends_json(request, default_context=None):
     return json_response
 
 
+@permission_required('crashstats.view_rawdump')
 def raw_data(request, crash_id, extension):
-    if not request.user.is_active:
-        return http.HttpResponseForbidden("Must be logged in")
-
     api = models.RawCrash()
     if extension == 'json':
         format = 'meta'

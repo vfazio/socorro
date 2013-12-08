@@ -2,6 +2,7 @@
 {% block site_css %}
   {{ super() }}
   {% compress css %}
+  <link href="{{ static('crashstats/css/topcrashers.less') }}" rel="stylesheet" type="text/less" media="screen" />
   <link href="{{ static('crashstats/css/flora/flora.tablesorter.css') }}" rel="stylesheet" type="text/css">
   {% endcompress %}
 {% endblock %}
@@ -20,14 +21,14 @@ Top Crashers for {{ product }} {{ version }}
                 <li><a href="{{ url('crashstats.topcrasher', product, version, 'report', crash_type, os_name) }}?days={{ days }}"
                   {% if date_range_type == 'report' %} class="selected"{% endif %}>By Crash Date</a></li>
                   {% if has_builds %}
-                    <li><a href="{{ url('crashstats.topcrasher', product, version, 'build', crash_type, os_name) }}?days={{ days }}"
+                    <li><a href="{{ url('crashstats.topcrasher', product, version, 'build', crash_type, os_name, result_count) }}?days={{ days }}"
                     {% if date_range_type == 'build' %} class="selected"{% endif %}>By Build Date</a></li>
                   {% endif %}
                 {% else %}
-                  <li><a href="{{ url('crashstats.topcrasher', product, version, 'report', crash_type, os_name) }}?days={{ days }}"
+                  <li><a href="{{ url('crashstats.topcrasher', product, version, 'report', crash_type, os_name, result_count) }}?days={{ days }}"
                   {% if date_range_type == 'report' %} class="selected"{% endif %}>By Crash Date</a></li>
                   {% if has_builds %}
-                    <li><a href="{{ url('crashstats.topcrasher', product, version, 'build', crash_type, os_name) }}?days={{ days }}"
+                    <li><a href="{{ url('crashstats.topcrasher', product, version, 'build', crash_type, os_name, result_count) }}?days={{ days }}"
                     {% if date_range_type == 'build' %} class="selected"{% endif %}>By Build Date</a></li>
                   {% endif %}
                 {% endif %}
@@ -44,46 +45,52 @@ Top Crashers for {{ product }} {{ version }}
                 <p>The report covers <span class="percentage" title="{{ tcbs.totalPercentage }}">{{ (tcbs.totalPercentage * 100) | round(2) }}</span>% of all {{ tcbs.totalNumberOfCrashes }} crashes during this period. Graphs below are dual-axis, having <strong>Count</strong> (Number of Crashes) on the left X axis and <strong>Percent</strong> of total of Crashes on the right X axis.</p>
             {% endif %}
                 <ul class="tc-duration-type tc-filter">
-                <li class="tc-duration-heading">Type:</li>
+                <li class="tc-selector-heading">Type:</li>
                 {% for c in ['all', 'browser', 'plugin', 'content'] %}
-                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, c, os_name) }}?days={{ days }}" {% if crash_type == c %} class="selected" {% endif %} >{{ c|capitalize }}</a></li>
+                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, c, os_name, result_count) }}?days={{ days }}" {% if crash_type == c %} class="selected" {% endif %} >{{ c|capitalize }}</a></li>
                 {% endfor %}
             </ul>
             <ul class="tc-duration-days tc-filter">
-                <li class="tc-duration-heading">Days:</li>
+                <li class="tc-selector-heading">Days:</li>
                 {% for day in possible_days %}
-                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, crash_type, os_name) }}?days={{ day }}" {% if days == day %} class="selected" {% endif %}>{{ day }}</a></li>
+                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, crash_type, os_name, result_count) }}?days={{ day }}" {% if days == day %} class="selected" {% endif %}>{{ day }}</a></li>
                 {% endfor %}
             </ul>
             <ul class="tc-per-platform tc-filter">
-                <li class="tc-per-platform-heading">OS:</li>
-                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, crash_type) }}?days={{ days }}" {% if not os_name %} class="selected" {% endif %}>All</a></li>
+                <li class="tc-selector-heading">OS:</li>
+                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, crash_type, result_count) }}?days={{ days }}" {% if not os_name %} class="selected" {% endif %}>All</a></li>
                 {% for os in ['Windows', 'Linux', 'Mac OS X'] %}
-                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, crash_type, os) }}?days={{ days }}" {% if os_name == os %} class="selected" {% endif %}>{{ os }}</a></li>
+                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, crash_type, os, result_count) }}?days={{ days }}" {% if os_name == os %} class="selected" {% endif %}>{{ os }}</a></li>
+                {% endfor %}
+            </ul>
+            <ul class="tc-result-count tc-filter">
+                <li class="tc-selector-heading">Result Count:</li>
+                {% for res_count in result_counts %}
+                <li><a href="{{ url('crashstats.topcrasher', product, version, date_range_type, crash_type, os_name, res_count) }}?days={{ days }}" {% if result_count == res_count %} class="selected" {% endif %}>{{ res_count }}</a></li>
                 {% endfor %}
             </ul>
             {% if total_crashing_signatures %}
             <table id="{% if not os_name %}signatureList{% else %}peros-tbl{% endif %}" class="data-table tablesorter">
                 <thead>
                     <tr>
-                        <th>Rank</th>
-                        <th title="The percentage of crashes against overall crash volume">%</th>
-                        <th title="The change in percentage since the {{ tcbs.start_date }} report">Diff</th>
-                        <th>Signature</th>
+                        <th scope="col">Rank</th>
+                        <th title="The percentage of crashes against overall crash volume" scope="col">%</th>
+                        <th title="The change in percentage since the {{ tcbs.start_date }} report" scope="col">Diff</th>
+                        <th scope="col">Signature</th>
                         {% if not os_name %}
-                        <th title="Crashes across platforms">Count</th>
-                        <th>Win</th>
-                        <th>Mac</th>
-                        <th>Lin</th>
-                        <th>Ver</th>
+                        <th title="Crashes across platforms" scope="col">Count</th>
+                        <th scope="col">Win</th>
+                        <th scope="col">Mac</th>
+                        <th scope="col">Lin</th>
+                        <th scope="col">Ver</th>
                         {% else %}
-                        <th>{{ os_name }}</th>
-                        <th>Ver</th>
+                        <th scope="col">{{ os_name }}</th>
+                        <th scope="col">Ver</th>
                         {% endif %}
-                        <th>Is GC</th>
-                        <th>First Appearance</th>
-                        <th class="bugzilla_numbers">Bugzilla IDs</th>
-                        <th title="Does not imply Causation">Correlation</th>
+                        <th scope="col">Is GC</th>
+                        <th scope="col">First Appearance</th>
+                        <th class="bugzilla_numbers" scope="col">Bugzilla IDs</th>
+                        <th title="Does not imply Causation" scope="col">Correlation</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -108,7 +115,7 @@ Top Crashers for {{ product }} {{ version }}
                         {% else %}
                         <td title="A change of {{ (crash.changeInPercentOfTotal * 100) | round(2) }}% from {{ (crash.previousPercentOfTotal * 100) | round(2) }}%">{{ (crash.changeInPercentOfTotal * 100) | round(2) }}%</td>
                         {% endif %}
-                        <td>
+                        <td class="signature-column">
                             <a class="signature" href="{{ url('crashstats.report_list') }}?product={{ product }}&amp;range_value={{ days }}&amp;range_unit=days&amp;date={{ tcbs.end_date }}&amp;signature={{ crash.signature|urlencode }}&amp;version={{ product }}%3A{{ version }}" title="{{ crash.signature }}">{{ crash.signature|truncate(length=80, killwords=True) }}</a>
                             <div class="signature-icons">
                                 {% if crash.hang_count > 0 %}
@@ -126,10 +133,9 @@ Top Crashers for {{ product }} {{ version }}
                                 {% endif %}
                                 <a href="#" title="Load graph data"><img src="{{ static('img/3rdparty/silk/chart_curve.png') }}" width="16" height="16" alt="Graph this" class="graph-icon" /></a>
                             </div>
-                            <div class="sig-history-legend"></div>
-                            <p class="graph-close hide"><a href="javascript:void(0)" title="Close graph">close x</a></p>
-                            <div class="sig-history-graph"></div>
-                            <input type="hidden" class='ajax-signature' name="ajax-signature-1" value="{{ crash.signature|urlencode }}" />
+                            <div class="sig-history-container hide">
+                                <input type="hidden" class='ajax-signature' name="ajax-signature-1" value="{{ crash.signature }}" />
+                            </div>
                         </td>
                         {% if not os_name %}
                         <td>{{ crash.count }}</td>

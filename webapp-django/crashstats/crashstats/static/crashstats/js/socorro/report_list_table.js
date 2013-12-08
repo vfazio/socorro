@@ -1,7 +1,15 @@
-/*jslint Panels:true */
+/* globals $, Panels */
 
 var Table = (function() {
     var loaded = null;
+
+    function post_activate($panel) {
+        var buildid_table = $('#buildid-table');
+
+        if(buildid_table.length > 0) {
+            buildid_table.tablesorter();
+        }
+    }
 
     return {
        activate: function() {
@@ -17,6 +25,7 @@ var Table = (function() {
            req.done(function(response) {
                $('.loading-placeholder', $panel).hide();
                $('.inner', $panel).html(response);
+               post_activate($panel);
                deferred.resolve();
            });
            req.fail(function(data, textStatus, errorThrown) {

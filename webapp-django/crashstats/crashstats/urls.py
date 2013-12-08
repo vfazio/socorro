@@ -12,6 +12,7 @@ date_range_type = r'/date_range_type/(?P<date_range_type>\w+)'
 # `.../os_name/` without any default value which the view function will
 # take care of anyway
 os_name = r'/os_name/(?P<os_name>[\w\s]*)'
+result_count = r'/result_count/(?P<result_count>\d+)'
 perm_legacy_redirect = settings.PERMANENT_LEGACY_REDIRECTS
 report_list_partials = (
     'reports|comments|sigurls|bugzilla|table|correlations|graph'
@@ -67,6 +68,10 @@ urlpatterns = patterns(
         name='crashstats.topcrasher'),
     url('^topcrasher' + products + versions + date_range_type +
         crash_type + os_name + '$',
+        views.topcrasher,
+        name='crashstats.topcrasher'),
+    url('^topcrasher' + products + versions + date_range_type +
+        crash_type + os_name + result_count + '$',
         views.topcrasher,
         name='crashstats.topcrasher'),
     url('^topcrasher' + products + versions + crash_type + os_name + '$',
@@ -177,6 +182,9 @@ urlpatterns = patterns(
     url(r'^login/$',
         views.login,
         name='crashstats.login'),
+    url(r'^permissions/$',
+        views.permissions,
+        name='crashstats.permissions'),
     # if we do a permanent redirect, the browser will "cache" the redirect and
     # it will make it very hard to ever change the DEFAULT_PRODUCT
     url(r'^$',

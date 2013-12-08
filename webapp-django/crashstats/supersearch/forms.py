@@ -1,47 +1,82 @@
 from django import forms
-from django.conf import settings
 
-from crashstats.crashstats.form_fields import SignatureField
-from crashstats.crashstats.forms import make_choices
 from crashstats.supersearch import form_fields
+
+
+PII_RESTRICTED_FIELDS = {
+    'email': form_fields.StringField(required=False),
+    'url': form_fields.StringField(required=False),
+}
 
 
 class SearchForm(forms.Form):
     '''Handle the data populating the search form. '''
 
-    signature = SignatureField(required=False)  # CharField
-    product = forms.MultipleChoiceField(required=False)
-    version = forms.MultipleChoiceField(required=False)
-    platform = forms.MultipleChoiceField(required=False)
-    date = form_fields.DateTimeField(required=False)
-    reason = forms.CharField(required=False)
-    release_channel = forms.CharField(required=False)
+    address = form_fields.StringField(required=False)
+    app_notes = form_fields.MultipleValueField(required=False)
     build_id = form_fields.IntegerField(required=False)
+    cpu_info = form_fields.StringField(required=False)
+    cpu_name = form_fields.MultipleValueField(required=False)
+    date = form_fields.DateTimeField(required=False)
+    distributor = form_fields.MultipleValueField(required=False)
+    distributor_version = form_fields.MultipleValueField(required=False)
+    dump = form_fields.StringField(required=False)
+    flash_version = form_fields.MultipleValueField(required=False)
+    install_age = form_fields.IntegerField(required=False)
+    java_stack_trace = form_fields.MultipleValueField(required=False)
+    last_crash = form_fields.IntegerField(required=False)
+    platform = form_fields.MultipleValueField(required=False)
+    platform_version = form_fields.MultipleValueField(required=False)
+    plugin_name = form_fields.MultipleValueField(required=False)
+    plugin_filename = form_fields.MultipleValueField(required=False)
+    plugin_version = form_fields.MultipleValueField(required=False)
+    processor_notes = form_fields.MultipleValueField(required=False)
+    product = form_fields.MultipleValueField(required=False)
+    productid = form_fields.MultipleValueField(required=False)
+    reason = form_fields.StringField(required=False)
+    release_channel = form_fields.MultipleValueField(required=False)
+    signature = form_fields.StringField(required=False)
+    topmost_filenames = form_fields.MultipleValueField(required=False)
+    uptime = form_fields.IntegerField(required=False)
+    user_comments = form_fields.StringField(required=False)
+    version = form_fields.MultipleValueField(required=False)
+    winsock_lsp = form_fields.MultipleValueField(required=False)
 
-    process_type = forms.ChoiceField(
-        required=False,
-        choices=make_choices(settings.PROCESS_TYPES)
-    )
-    hang_type = forms.ChoiceField(
-        required=False,
-        choices=make_choices(settings.HANG_TYPES)
-    )
+    # TODO: This doesn't work and needs to be fixed.
+    # Pending on https://bugzilla.mozilla.org/show_bug.cgi?id=919559
+    # process_type = forms.ChoiceField(
+    #     required=False,
+    #     choices=make_choices(settings.PROCESS_TYPES)
+    # )
+    # hang_type = forms.ChoiceField(
+    #     required=False,
+    #     choices=make_choices(settings.HANG_TYPES)
+    # )
 
-    def __init__(self, current_products, current_versions, current_platforms,
-                 *args, **kwargs):
+    def __init__(
+        self,
+        current_products,
+        current_versions,
+        current_platforms,
+        pii_mode,
+        *args,
+        **kwargs
+    ):
         super(self.__class__, self).__init__(*args, **kwargs)
 
         # Default values
         platforms = [(x['name'], x['name']) for x in current_platforms]
         products = [(x, x) for x in current_products]
-        versions = [('ALL:ALL', 'ALL:ALL')]
-        versions.extend([
+        versions = [
             (v['version'], v['version']) for v in current_versions
-        ])
+        ]
 
         self.fields['product'].choices = products
         self.fields['version'].choices = versions
         self.fields['platform'].choices = platforms
+
+        if pii_mode:
+            self.fields.update(PII_RESTRICTED_FIELDS)
 
     def get_fields_list(self):
         '''Return a dictionary describing the fields, to pass to the
@@ -64,9 +99,11 @@ class SearchForm(forms.Form):
             else:
                 field_type = 'string'
 
-            if field_type in ('int', 'date'):
-                value_type = 'range'
-            elif isinstance(field, SignatureField):
+            if field_type == 'int':
+                value_type = 'number'
+            elif field_type == 'date':
+                value_type = 'date'
+            elif isinstance(field, form_fields.StringField):
                 value_type = 'string'
             else:
                 value_type = 'enum'

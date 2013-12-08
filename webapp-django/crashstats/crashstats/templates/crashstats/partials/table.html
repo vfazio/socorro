@@ -1,11 +1,12 @@
+{% if table %}
         <table id="buildid-table" class="tablesorter data-table">
             <thead>
                 <tr>
-                    <th>Build ID</th>
-                    <th>Crashes</th>
-                    <th>Win</th>
-                    <th>Mac</th>
-                    <th>Lin</th>
+                    <th scope="col">Build ID</th>
+                    <th scope="col">Crashes</th>
+                    <th scope="col">Win</th>
+                    <th scope="col">Mac</th>
+                    <th scope="col">Lin</th>
                 </tr>
             </thead>
             <tbody>
@@ -34,3 +35,6 @@
             {% endfor %}
           </tbody>
         </table>
+{% else %}
+<p>No build id data returned for {{ signature }}</p>
+{% endif %}

@@ -480,7 +480,20 @@ class TestModels(TestCase):
             products='Fennec',
             start_day=today,
             result_number=250,
-            result_offset=0
+            result_offset=0,
+            start_date=today,
+            end_date=today,
+        )
+
+        # Missing signature param
+        self.assertRaises(
+            models.RequiredParameterError,
+            api.get,
+            signature='Pickle::ReadBytes',
+            products='Fennec',
+            start_day=today,
+            result_number=250,
+            result_offset=0,
         )
 
         r = api.get(
@@ -488,7 +501,9 @@ class TestModels(TestCase):
             products='Fennec',
             start_day=today,
             result_number=250,
-            result_offset=0
+            result_offset=0,
+            start_date=today,
+            end_date=today,
         )
         ok_(r['total'])
         ok_(r['hits'])
@@ -1064,93 +1079,6 @@ class TestModels(TestCase):
         r = api.delete(category='suffix', rule='Foo')
         eq_(r, True)
 
-    @mock.patch.object(models.statsd, 'incr')
-    @mock.patch('requests.get')
-    def test_process_response(self, rget, incr):
-        model = models.RawCrash
-        api = model()
-
-        def mocked_get(url, **options):
-            assert '/crash_data/' in url
-            return Response("""
-                {
-                  "InstallTime": "1339289895",
-                  "FramePoisonSize": "4096",
-                  "Theme": "classic/1.0",
-                  "Version": "5.0a1",
-                  "Email": "socorro-123@restmail.net",
-                  "Vendor": "Mozilla"
-                  }
-            """)
-
-        rget.side_effect = mocked_get
-        api.get(crash_id='crash-id')
-        assert incr.called
-        metric = 'middleware.GET.crash_data/uuid/datatype/meta/.200'
-        incr.assert_called_with(metric)
-
-        # Test if replaces dates for XXXX-XX-XX
-        model = models.TCBS
-        api = model()
-
-        def mocked_get(**options):
-            assert 'crashes/signatures' in options['url']
-            return Response("""
-                {
-                    "start_date": "2012-05-10",
-                    "end_date": "2012-05-24"
-                }
-            """)
-
-        rget.side_effect = mocked_get
-        today = datetime.datetime.utcnow()
-        api.get(
-            product='Thunderbird',
-            version='12.0',
-            end_date=today,
-        )
-        assert incr.called
-        metric = "middleware.GET.crashes/signatures/product/Thunderbird/" \
-            "version/12-0/end_date/XXXX-XX-XX/limit/300/.200"
-        incr.assert_called_with(metric)
-
-        # Test if removes unique uuids
-        model = models.ProcessedCrash
-        api = model()
-
-        def mocked_get(url, **options):
-            assert '/crash_data/' in url
-            ok_('/datatype/processed/' in url)
-            return Response("""
-            {
-              "product": "WaterWolf",
-              "uuid": "7c44ade2-fdeb-4d6c-830a-07d302120525",
-              "version": "13.0",
-              "build": "20120501201020",
-              "ReleaseChannel": "beta",
-              "os_name": "Windows NT",
-              "date_processed": "2012-05-25 11:35:57",
-              "success": true,
-              "signature": "CLocalEndpointEnumerator::OnMediaNotific",
-              "addons": [
-                [
-                  "testpilot@labs.mozilla.com",
-                  "1.2.1"
-                ],
-                [
-                  "{972ce4c6-7e08-4474-a285-3208198ce6fd}",
-                  "13.0"
-                ]
-              ]
-            }
-            """)
-
-        rget.side_effect = mocked_get
-        api.get(crash_id='7c44ade2-fdeb-4d6c-830a-07d302120525')
-        assert incr.called
-        metric = "middleware.GET.crash_data/datatype/processed/uuid/.200"
-        incr.assert_called_with(metric)
-
 
 class TestModelsWithFileCaching(TestCase):
 
@@ -1271,7 +1199,7 @@ class TestModelsWithFileCaching(TestCase):
         def mocked_get(url, **options):
             assert 'report/list/' in url
             signature_bit = url.split('/signature/')[1]
-            signature_bit = signature_bit.split('/products/Fennec/')[0]
+            signature_bit = signature_bit.split('/from/')[0]
             ok_('<script>' not in signature_bit)
             ok_(' ' not in signature_bit, 'space still in there')
             ok_('@' not in signature_bit, '@ still in there')
@@ -1291,8 +1219,9 @@ class TestModelsWithFileCaching(TestCase):
             signature='<script>  space @  / ? & ++ # ',
             products='Fennec',
             start_date=today,
+            end_date=today,
             result_number=250,
-            result_offset=0
+            result_offset=0,
         )
 
     @mock.patch('requests.get')
@@ -1325,6 +1254,7 @@ class TestModelsWithFileCaching(TestCase):
             signature=u'P\xe4ter',
             products='Fennec',
             start_date=today,
+            end_date=today,
             result_number=250,
             result_offset=0
         )

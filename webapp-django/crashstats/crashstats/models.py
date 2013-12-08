@@ -12,14 +12,12 @@ import requests
 import stat
 import time
 import urllib
-import re
 
 from django.conf import settings
 from django.core.cache import cache
 from django.utils.encoding import iri_to_uri
 from django.utils.hashcompat import md5_constructor
 from django.template.defaultfilters import slugify
-from django_statsd.clients import statsd
 
 from crashstats import scrubber
 from crashstats.api.cleaner import Cleaner
@@ -173,8 +171,6 @@ class SocorroCommon(object):
                 retries=retries - 1
             )
 
-        self._process_response(method, url, resp.status_code)
-
         if not resp.status_code == 200:
             raise BadStatusCodeError('%s: on: %s' % (resp.status_code, url))
 
@@ -200,30 +196,6 @@ class SocorroCommon(object):
                 raise NotImplementedError("No base_url defined in context")
             url = '%s%s' % (self.base_url, url)
         return url
-
-    def _process_response(self, method, url, status_code):
-        path = urlparse.urlparse(url).path
-        path_info = urllib.quote(path.encode('utf-8'))
-
-        # Removes uuids from path_info
-        if "uuid/" in url:
-            uuid = path_info.rsplit("/uuid/")
-            if len(uuid) == 2:
-                path_info = uuid[0] + '/uuid' + uuid[1][uuid[1].find('/'):]
-
-        # Replaces dates for XXXX-XX-XX
-        replaces = re.findall(r'(\d{4}-\d{2}-\d{2})', path_info)
-        for date in replaces:
-            date = path_info[path_info.find(date):].rsplit("/")[0]
-            path_info = path_info.replace(date, "XXXX-XX-XX")
-
-        metric = u"middleware.{0}.{1}.{2}".format(
-            method.upper(),
-            path_info.lstrip('/').replace('.', '-'),
-            status_code
-        )
-        metric = metric.encode('utf-8')
-        statsd.incr(metric)
 
 
 class SocorroMiddleware(SocorroCommon):
@@ -578,7 +550,7 @@ class Platforms(SocorroMiddleware):
 
 
 class CrashesPerAdu(SocorroMiddleware):
-    # Fetch records for active daily users.
+    # Fetch records for active daily installs.
 
     URL_PREFIX = '/crashes/daily/'
 
@@ -670,19 +642,22 @@ class TCBS(SocorroMiddleware):
 
 
 class ReportList(SocorroMiddleware):
-
+    """
+    The `start_date` and `end_date` are both required and its span
+    can not be more than 30 days.
+    """
     URL_PREFIX = '/report/list/'
 
     required_params = (
         'signature',
+        ('start_date', datetime.datetime),
+        ('end_date', datetime.datetime),
     )
 
     possible_params = (
         ('products', list),
         ('versions', list),
         ('os', list),
-        ('start_date', datetime.datetime),
-        ('end_date', datetime.datetime),
         'build_ids',
         'reasons',
         'release_channels',
@@ -692,7 +667,8 @@ class ReportList(SocorroMiddleware):
         'plugin_search_mode',
         'plugin_terms',
         'result_number',
-        'result_offset'
+        'result_offset',
+        'include_raw_crash',
     )
 
     aliases = {
@@ -722,6 +698,7 @@ class ReportList(SocorroMiddleware):
             'duplicate_of',
             'address',
             'user_comments',
+            # deliberately avoiding 'raw_crash' here
         )
     }
 
@@ -878,6 +855,17 @@ class RawCrash(SocorroMiddleware):
         'Android_CPU_ABI',
         'Android_CPU_ABI2',
         'throttle_rate',
+        'AsyncShutdownTimeout',
+        'BIOS_Manufacturer',
+        'upload_file_minidump_browser',
+        'upload_file_minidump_flash1',
+        'upload_file_minidump_flash2',
+        'upload_file_minidump_plugin',
+    )
+
+    API_CLEAN_SCRUB = (
+        ('Comments', scrubber.EMAIL),
+        ('Comments', scrubber.URL),
     )
 
     def get(self, **kwargs):
@@ -1099,6 +1087,8 @@ class Status(SocorroMiddleware):
     possible_params = (
         'duration',
     )
+
+    cache_seconds = 0
 
     def get(self, decode_json=True, **kwargs):
         duration = kwargs.get('duration') or 12

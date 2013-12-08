@@ -8,11 +8,24 @@
         {% block site_css %}
             {% compress css %}
             <link href="{{ static('crashstats/css/screen.less') }}" type="text/less" rel="stylesheet">
-	    <link href="{{ static('auth/css/persona-button.css') }}" type="text/less" rel="stylesheet">
             {% endcompress %}
+            {{ browserid_css() }}
         {% endblock %}
+	{% if GOOGLE_ANALYTICS_ID %}
+	<script type="text/javascript">
+        var _gaq = _gaq || [];
+        _gaq.push(['_setAccount', '{{ GOOGLE_ANALYTICS_ID }}']);
+	_gaq.push(['_trackPageview']);
+	(function() {
+	var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+	ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+	var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+	})();
+	</script>
+	{% endif %}
     </head>
     <body>
+    {{ browserid_info() }}
     <div class="page-header">
         <h1>
             <a href="/">
@@ -81,8 +94,8 @@
                         <option value="{{ url('crashstats.topchangers', product) }}" {% if report == 'topchangers' %}selected{% endif %}>Top Changers</option>
                         <option value="{{ url('crashstats.topcrasher', product) }}" {% if report == 'topcrasher' %}selected{% endif %}>Top Crashers</option>
                         <option value="{{ url('crashstats.crash_trends', product)}}" {% if report == 'crash_trends' %}selected{% endif %}>Crash Trends</option>
-                        <!-- <option value="{{ url('crashstats.explosive', product) }}" {% if report == 'explosive' %}selected{% endif %}>Explosive Crashes</option> disabled for now-->
-                        {% if request.user.is_authenticated() %}
+                        <option value="{{ url('crashstats.explosive', product) }}" {% if report == 'explosive' %}selected{% endif %}>Explosive Crashes</option>
+                        {% if request.user.has_perm('crashstats.view_exploitability') %}
                         <option value="{{ url('crashstats.exploitable_crashes') }}">Exploitable Crashes</option>
                         {% endif %}
                     </optgroup>
@@ -93,6 +106,9 @@
 
         <div class="search">
             <a href="{{ url('crashstats.query') }}?product={{ product }}{% if version and version != 'ALL' %}&amp;version={{ product}}:{{ version }}{% endif %}#advanced">Advanced Search</a>
+            {% if waffle.switch('supersearch-all') %}
+            - <a href="{{ url('supersearch.search') }}">Super Search</a>
+            {% endif %}
         </div>
     </div>
 
@@ -125,22 +141,18 @@
         <div class="login">
             <ul>
                 <li>
-                    {% if request.user.is_active %}
+                    {% if request.user.is_authenticated() %}
                       {{ request.user.email }}
                       |
-                      <a href="{{ url('manage:home') }}">Admin</a>
+                      <a href="{{ url('crashstats.permissions') }}">Your Permissions</a>
+                      {% if request.user.is_superuser %}
                       |
-                      <a href="{{ url('auth:logout') }}">Sign out</a>
+                      <a href="{{ url('manage:home') }}">Admin</a>
+                      {% endif %}
+                      |
+                      {{ browserid_logout(text='Sign out') }}
                     {% else %}
-                      <a href="#" class="persona-button dark" id="browserid"
-                         title="Sign in with Persona">
-                        <span>Sign in</span>
-                      </a>
-                      <form method="post" action="{{ url('auth:mozilla_browserid_verify') }}">
-                        {{ csrf() }}
-                        {{ browserid_form.as_p() }}
-                        <input type="hidden" name="goto" value="{{ request.get_full_path() }}">
-                      </form>
+		      {{ browserid_login(text='Sign in', color='dark', next=request.build_absolute_uri()) }}
                     {% endif %}
                 </li>
 	    </ul>
@@ -152,9 +164,7 @@
     <script src="{{ static('crashstats/js/jquery/plugins/jquery.cookies.2.2.0.js') }}"></script>
     <script src="{{ static('crashstats/js/socorro/nav.js') }}"></script>
     {% endcompress %}
-    {% if not request.user.is_active %}
-      {{ browserid_form.media }}
-    {% endif %}
+    {{ browserid_js() }}
     {% endblock %}
   </body>
 </html>

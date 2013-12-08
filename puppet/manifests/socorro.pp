@@ -2,16 +2,19 @@ class webapp::socorro {
 
     service {
         'rabbitmq-server':
+            enable => true,
             ensure => running,
             require => Package['rabbitmq-server'];
 
         'postgresql-9.3':
+            enable => true,
             ensure => running,
             require => [
                         Package['postgresql93-server'],
                         Exec['postgres-initdb'],
                        ];
         'elasticsearch':
+            enable => true,
             ensure => running,
             require => Package['elasticsearch'];
     }
@@ -33,29 +36,10 @@ class webapp::socorro {
             descr => 'EPEL',
             enabled => 1,
             gpgcheck => 0;
-    }
-
-    package {
-        [
-         'postgresql93-server',
-         'postgresql93-plperl',
-         'postgresql93-contrib',
-         'postgresql93-devel',
-        ]:
-        ensure => latest,
-        require => Yumrepo['PGDG'];
-    }
-
-    package {
-        [
-         'python-virtualenv',
-         'supervisor',
-         'rabbitmq-server',
-         'python-pip',
-         'npm',
-        ]:
-        ensure => latest,
-        require => Yumrepo['EPEL'];
+        'devtools':
+            baseurl => 'http://people.centos.org/tru/devtools-1.1/$releasever/$basearch/RPMS',
+            enabled => 1,
+            gpgcheck => 0;
     }
 
     package {
@@ -71,8 +55,32 @@ class webapp::socorro {
          'libxslt-devel',
          'openldap-devel',
          'java-1.7.0-openjdk',
+         'yum-plugin-fastestmirror',
         ]:
         ensure => latest;
+    }
+
+    package {
+        [
+         'postgresql93-server',
+         'postgresql93-plperl',
+         'postgresql93-contrib',
+         'postgresql93-devel',
+        ]:
+        ensure => latest,
+        require => [ Yumrepo['PGDG'], Package['yum-plugin-fastestmirror']];
+    }
+
+    package {
+        [
+         'python-virtualenv',
+         'supervisor',
+         'rabbitmq-server',
+         'python-pip',
+         'npm',
+        ]:
+        ensure => latest,
+        require => [ Yumrepo['EPEL'], Package['yum-plugin-fastestmirror']];
     }
 
     package {
@@ -80,6 +88,12 @@ class webapp::socorro {
             provider => rpm,
             source => 'https://download.elasticsearch.org/elasticsearch/elasticsearch/elasticsearch-0.90.4.noarch.rpm',
             require => Package['java-1.7.0-openjdk'],
-            ensure => 'latest';
+            ensure => 'present';
+    }
+
+    package {
+        'devtoolset-1.1-gcc-c++':
+            ensure => latest,
+            require => [ Yumrepo['devtools'], Package['yum-plugin-fastestmirror']];
     }
 }

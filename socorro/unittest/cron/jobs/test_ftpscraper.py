@@ -2,7 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import json
 import datetime
 import urllib2
 from functools import wraps
@@ -59,6 +58,151 @@ class TestFTPScraper(TestCaseBase):
             'http://google.com/dir1/'
         )
 
+    @mock.patch('socorro.cron.jobs.ftpscraper.time')
+    def test_patient_urlopen(self, mocked_time):
+
+        sleeps = []
+
+        def mocked_sleeper(seconds):
+            sleeps.append(seconds)
+
+        mocked_time.sleep = mocked_sleeper
+
+        mock_calls = []
+
+        @stringioify
+        def mocked_urlopener(url):
+            mock_calls.append(url)
+            if len(mock_calls) == 1:
+                raise urllib2.HTTPError(url, 500, "Server Error", {}, None)
+            if len(mock_calls) == 2:
+                raise urllib2.HTTPError(url, 504, "Timeout", {}, None)
+            if len(mock_calls) == 3:
+                raise urllib2.URLError("BadStatusLine")
+
+            return "<html>content</html>"
+
+        self.urllib2.side_effect = mocked_urlopener
+        content = ftpscraper.patient_urlopen(
+            'http://doesntmatt.er',
+            sleep_time=25
+        )
+        self.assertEqual(content, "<html>content</html>")
+        self.assertEqual(sleeps, [25, 25, 25])
+
+    @mock.patch('socorro.cron.jobs.ftpscraper.time')
+    def test_patient_urlopen_impatient_retriederror(self, mocked_time):
+
+        sleeps = []
+
+        def mocked_sleeper(seconds):
+            sleeps.append(seconds)
+
+        mocked_time.sleep = mocked_sleeper
+
+        mock_calls = []
+
+        @stringioify
+        def mocked_urlopener(url):
+            mock_calls.append(url)
+            if len(mock_calls) == 1:
+                raise urllib2.HTTPError(url, 500, "Server Error", {}, None)
+            if len(mock_calls) == 2:
+                raise urllib2.HTTPError(url, 504, "Timeout", {}, None)
+            if len(mock_calls) == 3:
+                raise urllib2.URLError("BadStatusLine")
+
+            return "<html>content</html>"
+
+        self.urllib2.side_effect = mocked_urlopener
+        # very impatient version
+        self.assertRaises(
+            ftpscraper.RetriedError,
+            ftpscraper.patient_urlopen,
+            'http://doesntmatt.er',
+            max_attempts=1
+        )
+        self.assertEqual(len(mock_calls), 1)
+
+        # less impatient
+        mock_calls = []
+        self.assertRaises(
+            ftpscraper.RetriedError,
+            ftpscraper.patient_urlopen,
+            'http://doesntmatt.er',
+            max_attempts=2
+        )
+        self.assertEqual(len(mock_calls), 2)
+
+    @mock.patch('socorro.cron.jobs.ftpscraper.time')
+    def test_patient_urlopen_some_raise_errors(self, mocked_time):
+
+        sleeps = []
+
+        def mocked_sleeper(seconds):
+            sleeps.append(seconds)
+
+        mocked_time.sleep = mocked_sleeper
+
+        mock_calls = []
+
+        @stringioify
+        def mocked_urlopener(url):
+            mock_calls.append(url)
+            if len(mock_calls) == 1:
+                raise urllib2.HTTPError(url, 500, "Server Error", {}, None)
+            raise urllib2.HTTPError(url, 400, "Bad Request", {}, None)
+
+        self.urllib2.side_effect = mocked_urlopener
+        # very impatient version
+        self.assertRaises(
+            urllib2.HTTPError,
+            ftpscraper.patient_urlopen,
+            'http://doesntmatt.er',
+        )
+
+    def test_patient_urlopen_pass_404_errors(self):
+        mock_calls = []
+
+        @stringioify
+        def mocked_urlopener(url):
+            mock_calls.append(url)
+            raise urllib2.HTTPError(url, 404, "Not Found", {}, None)
+
+        self.urllib2.side_effect = mocked_urlopener
+        response = ftpscraper.patient_urlopen('http://doesntmatt.er')
+        self.assertEqual(response, None)
+        assert len(mock_calls) == 1, mock_calls
+
+    @mock.patch('socorro.cron.jobs.ftpscraper.time')
+    def test_patient_urlopen_eventual_retriederror(self, mocked_time):
+
+        sleeps = []
+
+        def mocked_sleeper(seconds):
+            sleeps.append(seconds)
+
+        mocked_time.sleep = mocked_sleeper
+
+        mock_calls = []
+
+        @stringioify
+        def mocked_urlopener(url):
+            mock_calls.append(url)
+            if len(mock_calls) % 2:
+                raise urllib2.HTTPError(url, 500, "Server Error", {}, None)
+            else:
+                raise urllib2.URLError("BadStatusLine")
+
+        self.urllib2.side_effect = mocked_urlopener
+        # very impatient version
+        self.assertRaises(
+            ftpscraper.RetriedError,
+            ftpscraper.patient_urlopen,
+            'http://doesntmatt.er',
+        )
+        self.assertTrue(len(mock_calls) > 1)
+
     def test_getLinks(self):
         @stringioify
         def mocked_urlopener(url):
@@ -87,70 +231,16 @@ class TestFTPScraper(TestCaseBase):
             []
         )
 
-    @mock.patch('socorro.cron.jobs.ftpscraper.time')
-    def test_getLinks_with_timeout_retries(self, mocked_time):
-
-        sleeps = []
-
-        def mocked_sleeper(seconds):
-            sleeps.append(seconds)
-
-        mocked_time.sleep = mocked_sleeper
-
-        mock_calls = []
-
+    def test_getLinks_with_page_not_found(self):
         @stringioify
         def mocked_urlopener(url):
-            mock_calls.append(url)
-            if len(mock_calls) == 1:
-                raise urllib2.HTTPError(url, 500, "Server Error", {}, None)
-            if len(mock_calls) == 2:
-                raise urllib2.HTTPError(url, 504, "Timeout", {}, None)
-            if len(mock_calls) == 3:
-                raise urllib2.URLError("BadStatusLine")
-
-            html_wrap = "<html><body>\n%s\n</body></html>"
-            if 'ONE' in url:
-                return html_wrap % """
-                <a href='One.html'>One.html</a>
-                """
-            raise NotImplementedError(url)
+            raise urllib2.HTTPError(url, 404, "Not Found", {}, None)
 
         self.urllib2.side_effect = mocked_urlopener
         self.assertEqual(
-            ftpscraper.getLinks('ONE', startswith='One'),
-            ['One.html']
+            ftpscraper.getLinks('ONE'),
+            []
         )
-        # it had to go to sleep 3 times
-        self.assertEqual(len(sleeps), 3)
-
-
-    @mock.patch('socorro.cron.jobs.ftpscraper.time')
-    def test_getLinks_with_timeout_retries_failing(self, mocked_time):
-
-        sleeps = []
-
-        def mocked_sleeper(seconds):
-            sleeps.append(seconds)
-
-        mocked_time.sleep = mocked_sleeper
-
-        mock_calls = []
-
-        @stringioify
-        def mocked_urlopener(url):
-            mock_calls.append(url)
-            raise urllib2.HTTPError(url, 500, "Server Error", {}, None)
-
-        self.urllib2.side_effect = mocked_urlopener
-        self.assertRaises(
-            ftpscraper.RetriedError,
-            ftpscraper.getLinks,
-            'ONE',
-            startswith='One',
-        )
-        # it had to go to sleep 3 times and failed on the 4th
-        self.assertEqual(len(sleeps), 4)
 
     def test_parseInfoFile(self):
         @stringioify
@@ -165,7 +255,10 @@ class TestFTPScraper(TestCaseBase):
                 return ('123\nhttp://hg.mozilla.org/123\n'
                         'http://git.mozilla.org/123')
             if 'FIVE' in url:
-                return '{"buildid": "20130309070203", "update_channel": "nightly", "version": "18.0"}'
+                return (
+                    '{"buildid": "20130309070203", '
+                    '"update_channel": "nightly", "version": "18.0"}'
+                )
             raise NotImplementedError(url)
         self.urllib2.side_effect = mocked_urlopener
 
@@ -216,6 +309,19 @@ class TestFTPScraper(TestCaseBase):
             ({'BUILDID': '123'}, ['buildID'])
         )
 
+    def test_parseInfoFile_with_page_not_found(self):
+
+        @stringioify
+        def mocked_urlopener(url):
+            raise urllib2.HTTPError(url, 404, "Not Found", {}, None)
+
+        self.urllib2.side_effect = mocked_urlopener
+
+        self.assertEqual(
+            ftpscraper.parseInfoFile('ONE'),
+            ({}, [])
+        )
+
     def test_getRelease(self):
         @stringioify
         def mocked_urlopener(url):
@@ -246,6 +352,17 @@ class TestFTPScraper(TestCaseBase):
         self.assertEqual(
             list(ftpscraper.getRelease('ONE', 'http://x')),
             [('linux', 'ONE', 'build-11', {'BUILDID': '123'}, [])]
+        )
+
+    def test_parseB2GFile_with_page_not_found(self):
+        @stringioify
+        def mocked_urlopener(url):
+            raise urllib2.HTTPError(url, 404, "Not Found", {}, None)
+        self.urllib2.side_effect = mocked_urlopener
+
+        self.assertEqual(
+            ftpscraper.parseB2GFile('FIVE', nightly=True),
+            None
         )
 
     def test_getNightly(self):
@@ -289,7 +406,10 @@ class TestFTPScraper(TestCaseBase):
         def mocked_urlopener(url):
             html_wrap = "<html><body>\n%s\n</body></html>"
             if '.json' in url:
-                return '{"buildid": "20130309070203", "update_channel": "nightly", "version": "18.0"}'
+                return (
+                    '{"buildid": "20130309070203", '
+                    '"update_channel": "nightly", "version": "18.0"}'
+                )
             if 'ONE' in url:
                 return '{}'
             if 'TWO' in url:
@@ -319,17 +439,17 @@ class TestFTPScraper(TestCaseBase):
                     u'update_channel': u'nightly',
                     u'version': u'18.0',
                     'build_type': u'nightly'
-                    }),
+                }),
                 ('unagi', 'b2g-release', u'18.0', {
                     u'buildid': u'20130309070203',
                     u'update_channel': u'nightly',
                     u'version': u'18.0',
                     'build_type': u'nightly'
-                    })
+                })
             ]
         )
 
-#==============================================================================
+
 @attr(integration='postgres')  # for nosetests
 class TestIntegrationFTPScraper(IntegrationTestCaseBase):
 
@@ -425,7 +545,6 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
         self.urllib2 = self.urllib2_patcher.start()
 
     def tearDown(self):
-        super(TestIntegrationFTPScraper, self).tearDown()
         cursor = self.conn.cursor()
         cursor.execute("""
             TRUNCATE TABLE releases_raw CASCADE;
@@ -437,16 +556,16 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
         """)
         self.conn.commit()
         self.urllib2_patcher.stop()
+        super(TestIntegrationFTPScraper, self).tearDown()
 
     def _setup_config_manager(self):
         _super = super(TestIntegrationFTPScraper, self)._setup_config_manager
-        config_manager, json_file = _super(
-          'socorro.cron.jobs.ftpscraper.FTPScraperCronApp|1d',
-          extra_value_source={
-            'crontabber.class-FTPScraperCronApp.products': 'firefox',
-          }
+        return _super(
+            'socorro.cron.jobs.ftpscraper.FTPScraperCronApp|1d',
+            extra_value_source={
+                'crontabber.class-FTPScraperCronApp.products': 'firefox',
+            }
         )
-        return config_manager, json_file
 
     def test_basic_run(self):
 
@@ -482,31 +601,42 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
                 return html_wrap % today.strftime("""
                 <a href="%Y-%m-%d-trunk/">%Y-%m-%d-trunk</a>
                 """)
-            if url.endswith(today.strftime(
-              '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/')):
+            if url.endswith(
+                today.strftime(
+                    '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/'
+                )
+            ):
                 return html_wrap % """
                 <a href="mozilla-nightly-15.0a1.en-US.linux-x86_64.txt">txt</a>
                 <a href="mozilla-nightly-15.0a2.en-US.linux-x86_64.txt">txt</a>
                 """
-            if url.endswith(today.strftime(
-              '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/mozilla-nightly-15.0a1.en'
-              '-US.linux-x86_64.txt')):
-                return (
-                   "20120505030510\n"
-                   "http://hg.mozilla.org/mozilla-central/rev/0a48e6561534"
+            if url.endswith(
+                today.strftime(
+                    '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/'
+                    'mozilla-nightly-15.0a1.en-US.linux-x86_64.txt'
                 )
-            if url.endswith(today.strftime(
-              '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/mozilla-nightly-15.0a2.en'
-              '-US.linux-x86_64.txt')):
+            ):
                 return (
-                   "20120505443322\n"
-                   "http://hg.mozilla.org/mozilla-central/rev/xxx123"
+                    "20120505030510\n"
+                    "http://hg.mozilla.org/mozilla-central/rev/0a48e6561534"
                 )
             if url.endswith(
-              '/firefox/nightly/10.0-candidates/build1/linux_info.txt'):
+                today.strftime(
+                    '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/'
+                    'mozilla-nightly-15.0a2.en-US.linux-x86_64.txt'
+                )
+            ):
+                return (
+                    "20120505443322\n"
+                    "http://hg.mozilla.org/mozilla-central/rev/xxx123"
+                )
+            if url.endswith(
+                '/firefox/nightly/10.0-candidates/build1/linux_info.txt'
+            ):
                 return "buildID=20120516113045"
             if url.endswith(
-              '/firefox/candidates/10.0b4-candidates/build1/linux_info.txt'):
+                '/firefox/candidates/10.0b4-candidates/build1/linux_info.txt'
+            ):
                 return "buildID=20120516114455"
 
             # bad testing boy!
@@ -514,12 +644,12 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
 
         self.urllib2.side_effect = mocked_urlopener
 
-        config_manager, json_file = self._setup_config_manager()
+        config_manager = self._setup_config_manager()
         with config_manager.context() as config:
             tab = crontabber.CronTabber(config)
             tab.run_all()
 
-            information = json.load(open(json_file))
+            information = self._load_structure()
             assert information['ftpscraper']
             assert not information['ftpscraper']['last_error']
             assert information['ftpscraper']['last_success']
@@ -528,10 +658,9 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
 
         columns = 'product_name', 'build_id', 'build_type'
         cursor.execute("""
-        select %s
-        from releases_raw
-        """ % ','.join(columns)
-        )
+            select %s
+            from releases_raw
+        """ % ','.join(columns))
         builds = [dict(zip(columns, row)) for row in cursor.fetchall()]
         build_ids = dict((str(x['build_id']), x) for x in builds)
         self.assertTrue('20120516114455' in build_ids)
@@ -557,7 +686,7 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
             tab = crontabber.CronTabber(config)
             tab.run_all()
 
-            information = json.load(open(json_file))
+            information = self._load_structure()
             assert information['ftpscraper']
             assert not information['ftpscraper']['last_error']
             assert information['ftpscraper']['last_success']
@@ -609,31 +738,39 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
                 return html_wrap % today.strftime("""
                 <a href="%Y-%m-%d-trunk/">%Y-%m-%d-trunk</a>
                 """)
-            if url.endswith(today.strftime(
-              '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/')):
+            if url.endswith(
+                today.strftime('/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/')
+            ):
                 return html_wrap % """
                 <a href="mozilla-nightly-15.0a1.en-US.linux-x86_64.txt">txt</a>
                 <a href="mozilla-nightly-15.0a2.en-US.linux-x86_64.txt">txt</a>
                 """
-            if url.endswith(today.strftime(
-              '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/mozilla-nightly-15.0a1.en'
-              '-US.linux-x86_64.txt')):
-                return (
-                   "20120505030510\n"
-                   "http://hg.mozilla.org/mozilla-central/rev/0a48e6561534"
+            if url.endswith(
+                today.strftime(
+                    '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/'
+                    'mozilla-nightly-15.0a1.en-US.linux-x86_64.txt'
                 )
-            if url.endswith(today.strftime(
-              '/firefox/nightly/%Y/%m/%Y-%m-%d-trunk/mozilla-nightly-15.0a2.en'
-              '-US.linux-x86_64.txt')):
+            ):
                 return (
-                   "20120505443322\n"
-                   "http://hg.mozilla.org/mozilla-central/rev/xxx123"
+                    "20120505030510\n"
+                    "http://hg.mozilla.org/mozilla-central/rev/0a48e6561534"
                 )
             if url.endswith(
-              '/firefox/nightly/10.0-candidates/build1/linux_info.txt'):
+                today.strftime(
+                    '/firefox/nightly/%Y/%m/%Y-%m-%d-'
+                    'trunk/mozilla-nightly-15.0a2.en'
+                    '-US.linux-x86_64.txt'
+                )
+            ):
+                return (
+                    "20120505443322\n"
+                    "http://hg.mozilla.org/mozilla-central/rev/xxx123"
+                )
+            if url.endswith('/firefox/nightly/10.0-candidates/build1/'
+                            'linux_info.txt'):
                 return "buildID=20120516113045"
-            if url.endswith(
-              '/firefox/candidates/10.0b4-candidates/build1/linux_info.txt'):
+            if url.endswith('/firefox/candidates/10.0b4-candidates/build1/'
+                            'linux_info.txt'):
                 return "bOildID"
 
             # bad testing boy!
@@ -641,12 +778,12 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
 
         self.urllib2.side_effect = mocked_urlopener
 
-        config_manager, json_file = self._setup_config_manager()
+        config_manager = self._setup_config_manager()
         with config_manager.context() as config:
             tab = crontabber.CronTabber(config)
             tab.run_all()
 
-            information = json.load(open(json_file))
+            information = self._load_structure()
             assert information['ftpscraper']
             assert not information['ftpscraper']['last_error']
             assert information['ftpscraper']['last_success']
@@ -662,10 +799,9 @@ class TestIntegrationFTPScraper(IntegrationTestCaseBase):
 
         columns = 'product_name', 'build_id', 'build_type'
         cursor.execute("""
-        select %s
-        from releases_raw
-        """ % ','.join(columns)
-        )
+            select %s
+            from releases_raw
+        """ % ','.join(columns))
         builds = [dict(zip(columns, row)) for row in cursor.fetchall()]
         build_ids = dict((str(x['build_id']), x) for x in builds)
         self.assertTrue('20120516114455' not in build_ids)

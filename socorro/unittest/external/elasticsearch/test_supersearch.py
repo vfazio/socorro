@@ -4,7 +4,6 @@
 
 import datetime
 import mock
-import unittest
 from nose.plugins.attrib import attr
 
 from configman import ConfigurationManager, Namespace
@@ -13,8 +12,7 @@ from socorro.external import BadArgumentError
 from socorro.external.elasticsearch import crashstorage
 from socorro.external.elasticsearch.supersearch import SuperSearch
 from socorro.lib import datetimeutil, search_common
-from socorro.unittest.config import commonconfig
-
+from .unittestbase import ElasticSearchTestCase
 
 # Remove debugging noise during development
 # import logging
@@ -22,14 +20,14 @@ from socorro.unittest.config import commonconfig
 # logging.getLogger('elasticutils').setLevel(logging.ERROR)
 
 
-def _get_config_manager(es_index=None):
+def _get_config_manager(config, es_index=None):
     if not es_index:
-        es_index = commonconfig.elasticsearch_index.default
+        es_index = config.elasticsearch_index
 
     mock_logging = mock.Mock()
 
     required_config = \
-        crashstorage.ElasticSearchCrashStorage.required_config
+        crashstorage.ElasticSearchCrashStorage.get_required_config()
     required_config.add_option('logger', default=mock_logging)
 
     webapi = Namespace()
@@ -45,12 +43,14 @@ def _get_config_manager(es_index=None):
         'facets_max_number',
         'searchMaxNumberOfDistinctSignatures',
         'platforms',
-        'channels',
+        'non_release_channels',
         'restricted_channels',
     ]:
-        webapi[opt] = getattr(commonconfig, opt).default
+        webapi[opt] = config.get(opt)
 
     required_config.webapi = webapi
+
+    elasticsearch_url = 'http://' + config.elasticSearchHostname + ':9200'
 
     config_manager = ConfigurationManager(
         [required_config],
@@ -59,19 +59,20 @@ def _get_config_manager(es_index=None):
         app_description='app description',
         values_source_list=[{
             'logger': mock_logging,
-            'elasticsearch_urls': commonconfig.elasticsearch_urls.default,
             'elasticsearch_index': es_index,
+            'elasticsearch_urls': elasticsearch_url,
+            'backoff_delays': [1, 2],
         }]
     )
 
     return config_manager
 
 
-class TestSuperSearch(unittest.TestCase):
+class TestSuperSearch(ElasticSearchTestCase):
     """Test SuperSearch's behavior with a mocked elasticsearch database. """
 
     def test_get_indexes(self):
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         now = datetime.datetime(2000, 2, 1, 0, 0)
@@ -86,7 +87,8 @@ class TestSuperSearch(unittest.TestCase):
         res = api.get_indexes(dates)
         self.assertEqual(res, 'socorro_integration_test')
 
-        with _get_config_manager(es_index='socorro_%Y%W').context() as config:
+        with _get_config_manager(self.config, es_index='socorro_%Y%W') \
+            .context() as config:
             api = SuperSearch(config)
 
         dates = [
@@ -111,12 +113,14 @@ class TestSuperSearch(unittest.TestCase):
 
 
 @attr(integration='elasticsearch')  # for nosetests
-class IntegrationTestSuperSearch(unittest.TestCase):
+class IntegrationTestSuperSearch(ElasticSearchTestCase):
     """Test SuperSearch with an elasticsearch database containing fake data.
     """
 
     def setUp(self):
-        with _get_config_manager().context() as config:
+        super(IntegrationTestSuperSearch, self).setUp()
+
+        with _get_config_manager(self.config).context() as config:
             self.storage = crashstorage.ElasticSearchCrashStorage(config)
 
             # clear the indices cache so the index is created on every test
@@ -272,12 +276,12 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
     def tearDown(self):
         # clear the test index
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             self.storage.es.delete_index(config.webapi.elasticsearch_index)
 
     def test_get(self):
         """Test a search with default values returns the right structure. """
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         res = api.get()
@@ -304,7 +308,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
     def test_get_individual_filters(self):
         """Test a search with single filters returns expected results. """
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         # Test signature
@@ -349,7 +353,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
         res = api.get(**args)
         self.assertEqual(res['total'], 1)
         self.assertEqual(res['hits'][0]['signature'], 'js::break_your_browser')
-        self.assertEqual(res['hits'][0]['os_name'], 'Windows NT')
+        self.assertEqual(res['hits'][0]['platform'], 'Windows NT')
 
         # Test build_id
         args = {
@@ -358,7 +362,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
         res = api.get(**args)
         self.assertEqual(res['total'], 1)
         self.assertEqual(res['hits'][0]['signature'], 'js::break_your_browser')
-        self.assertEqual(res['hits'][0]['build'], 987654321)
+        self.assertEqual(res['hits'][0]['build_id'], 987654321)
 
         # Test reason
         args = {
@@ -387,10 +391,10 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
         # Test url
         args = {
-            'url': 'mozilla',
+            'url': 'https://mozilla.org',
         }
         res = api.get(**args)
-        self.assertEqual(res['total'], 20)
+        self.assertEqual(res['total'], 19)
         self.assertEqual(res['hits'][0]['signature'], 'js::break_your_browser')
         self.assertTrue('mozilla.org' in res['hits'][0]['url'])
 
@@ -414,7 +418,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
     def test_get_with_range_operators(self):
         """Test a search with several filters and operators returns expected
         results. """
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         # Test date
@@ -438,7 +442,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
         res = api.get(**args)
         self.assertEqual(res['total'], 1)
         self.assertEqual(res['hits'][0]['signature'], 'js::break_your_browser')
-        self.assertTrue(res['hits'][0]['build'] < 1234567890)
+        self.assertTrue(res['hits'][0]['build_id'] < 1234567890)
 
         args = {
             'build_id': '>1234567889',
@@ -447,7 +451,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
         self.assertEqual(res['total'], 20)
         self.assertTrue(res['hits'])
         for report in res['hits']:
-            self.assertTrue(report['build'] > 1234567889)
+            self.assertTrue(report['build_id'] > 1234567889)
 
         args = {
             'build_id': '<=1234567890',
@@ -456,12 +460,12 @@ class IntegrationTestSuperSearch(unittest.TestCase):
         self.assertEqual(res['total'], 21)
         self.assertTrue(res['hits'])
         for report in res['hits']:
-            self.assertTrue(report['build'] <= 1234567890)
+            self.assertTrue(report['build_id'] <= 1234567890)
 
     def test_get_with_string_operators(self):
         """Test a search with several filters and operators returns expected
         results. """
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         # Test signature
@@ -530,14 +534,12 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
         # Test email
         args = {
-            'email': ['gmail', 'hotmail'],
+            'email': 'sauron@mordor.info',
         }
         res = api.get(**args)
-        self.assertEqual(res['total'], 19)
+        self.assertEqual(res['total'], 1)
         self.assertTrue(res['hits'])
-        for report in res['hits']:
-            self.assertTrue('@' in report['email'])
-            self.assertTrue('mail.com' in report['email'])
+        self.assertEqual(res['hits'][0]['email'], 'sauron@mordor.info')
 
         args = {
             'email': '~mail.com',
@@ -560,10 +562,10 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
         # Test url
         args = {
-            'url': ['mozilla', 'www'],
+            'url': 'https://mozilla.org',
         }
         res = api.get(**args)
-        self.assertEqual(res['total'], 21)
+        self.assertEqual(res['total'], 19)
 
         args = {
             'url': '~mozilla.org',
@@ -625,7 +627,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
     def test_get_with_facets(self):
         """Test a search with facets returns expected results. """
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         # Test several facets
@@ -645,9 +647,8 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
         self.assertTrue('platform' in res['facets'])
         expected_platforms = [
-            {'term': 'linux', 'count': 20},
-            {'term': 'windows', 'count': 1},
-            {'term': 'nt', 'count': 1},
+            {'term': 'Linux', 'count': 20},
+            {'term': 'Windows NT', 'count': 1},
         ]
         self.assertEqual(res['facets']['platform'], expected_platforms)
 
@@ -689,7 +690,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
     def test_get_with_pagination(self):
         """Test a search with pagination returns expected results. """
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         args = {
@@ -725,7 +726,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
 
     def test_get_with_not_operator(self):
         """Test a search with a few NOT operators. """
-        with _get_config_manager().context() as config:
+        with _get_config_manager(self.config).context() as config:
             api = SuperSearch(config)
 
         # Test signature
@@ -777,7 +778,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
         self.assertEqual(res['total'], 20)
         self.assertTrue(res['hits'])
         for report in res['hits']:
-            self.assertTrue(report['build'] > 1234567889)
+            self.assertTrue(report['build_id'] > 1234567889)
 
         args = {
             'build_id': '!>1234567889',
@@ -785,7 +786,7 @@ class IntegrationTestSuperSearch(unittest.TestCase):
         res = api.get(**args)
         self.assertEqual(res['total'], 1)
         self.assertEqual(res['hits'][0]['signature'], 'js::break_your_browser')
-        self.assertTrue(res['hits'][0]['build'] < 1234567890)
+        self.assertTrue(res['hits'][0]['build_id'] < 1234567890)
 
         args = {
             'build_id': '!<=1234567890',

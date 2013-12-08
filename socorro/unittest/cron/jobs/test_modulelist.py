@@ -2,11 +2,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import json
-import mock
 import functools
+
+import mock
+from nose.plugins.attrib import attr
+
 from socorro.cron import crontabber
-from ..base import TestCaseBase
+from ..base import IntegrationTestCaseBase
 import datetime
 
 from socorro.lib.datetimeutil import utc_now
@@ -46,20 +48,16 @@ def mocked_Popen(command, **kwargs):
 
 
 #==============================================================================
-class TestModulelist(TestCaseBase):
+@attr(integration='postgres')
+class TestModulelist(IntegrationTestCaseBase):
 
     def setUp(self):
         super(TestModulelist, self).setUp()
-        # needed so that crontabber doesn't use postgres for the crontabbers
-        # JSON backup
-        self.psycopg2_patcher = mock.patch('psycopg2.connect')
-        self.psycopg2 = self.psycopg2_patcher.start()
         self.Popen_patcher = mock.patch('subprocess.Popen')
         self.Popen = self.Popen_patcher.start()
 
     def tearDown(self):
         super(TestModulelist, self).tearDown()
-        self.psycopg2_patcher.stop()
         self.Popen_patcher.stop()
 
     def _setup_config_manager(self):
@@ -71,11 +69,10 @@ class TestModulelist(TestCaseBase):
         _source['crontabber.class-ModulelistCronApp.output_file'] = (
             '/some/other/place/%(date)s-modulelist.txt'
         )
-        config_manager, json_file = _super(
+        return _super(
             'socorro.cron.jobs.modulelist.ModulelistCronApp|1d',
             extra_value_source=_source
         )
-        return config_manager, json_file
 
     def test_basic_run_no_errors(self):
         # a mutable where commands sent are stored
@@ -88,12 +85,12 @@ class TestModulelist(TestCaseBase):
             _stderr='',
         )
 
-        config_manager, json_file = self._setup_config_manager()
+        config_manager = self._setup_config_manager()
         with config_manager.context() as config:
             tab = crontabber.CronTabber(config)
             tab.run_all()
 
-            information = json.load(open(json_file))
+            information = self._load_structure()
             assert information['modulelist']
             #print information['modulelist']['last_error']
             #print information['modulelist']['last_error']['traceback']
@@ -152,12 +149,12 @@ class TestModulelist(TestCaseBase):
             _stderr='First command failed :(',
         )
 
-        config_manager, json_file = self._setup_config_manager()
+        config_manager = self._setup_config_manager()
         with config_manager.context() as config:
             tab = crontabber.CronTabber(config)
             tab.run_all()
 
-            information = json.load(open(json_file))
+            information = self._load_structure()
             assert information['modulelist']
             assert information['modulelist']['last_error']
             _traceback = information['modulelist']['last_error']['traceback']
@@ -174,22 +171,22 @@ class TestModulelist(TestCaseBase):
             _commands_sent=commands_sent,
             _exit_code=lambda cmd: 1 if cmd.count('getmerge') else 0,
             _stdout='',
-            _stderr=lambda cmd: 'Shit' if cmd.count('getmerge') else '',
+            _stderr=lambda cmd: 'Enormity' if cmd.count('getmerge') else '',
         )
 
-        config_manager, json_file = self._setup_config_manager()
+        config_manager = self._setup_config_manager()
         with config_manager.context() as config:
             tab = crontabber.CronTabber(config)
             tab.run_all()
 
-            information = json.load(open(json_file))
+            information = self._load_structure()
             assert information['modulelist']
             assert information['modulelist']['last_error']
             _traceback = information['modulelist']['last_error']['traceback']
             self.assertTrue('hadoop getmerge failed' in _traceback)
             # the other two where cancelled
             self.assertEqual(len(commands_sent), 2)
-            config.logger.error.assert_called_with('Shit')
+            config.logger.error.assert_called_with('Enormity')
 
     def test_failing_hadoop_cleanup_job(self):
         # a mutable where commands sent are stored
@@ -199,19 +196,19 @@ class TestModulelist(TestCaseBase):
             _commands_sent=commands_sent,
             _exit_code=lambda cmd: 1 if cmd.count('-rmr') else 0,
             _stdout='',
-            _stderr=lambda cmd: 'Poop' if cmd.count('-rmr') else '',
+            _stderr=lambda cmd: 'Iniquity' if cmd.count('-rmr') else '',
         )
 
-        config_manager, json_file = self._setup_config_manager()
+        config_manager = self._setup_config_manager()
         with config_manager.context() as config:
             tab = crontabber.CronTabber(config)
             tab.run_all()
 
-            information = json.load(open(json_file))
+            information = self._load_structure()
             assert information['modulelist']
             assert information['modulelist']['last_error']
             _traceback = information['modulelist']['last_error']['traceback']
             self.assertTrue('hadoop cleanup failed' in _traceback)
             # the other two where cancelled
             self.assertEqual(len(commands_sent), 3)
-            config.logger.error.assert_called_with('Poop')
+            config.logger.error.assert_called_with('Iniquity')

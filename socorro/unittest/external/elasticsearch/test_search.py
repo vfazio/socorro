@@ -8,11 +8,16 @@ import unittest
 from nose.plugins.attrib import attr
 
 from configman import ConfigurationManager, Namespace
+from .unittestbase import ElasticSearchTestCase
 
 from socorro.external.elasticsearch import crashstorage
 from socorro.external.elasticsearch.search import Search
 from socorro.lib import util, datetimeutil
-from socorro.unittest.config import commonconfig
+
+# Remove debugging noise during development
+# import logging
+# logging.getLogger('pyelasticsearch').setLevel(logging.ERROR)
+# logging.getLogger('elasticutils').setLevel(logging.ERROR)
 
 
 #==============================================================================
@@ -157,10 +162,12 @@ class TestElasticSearchSearch(unittest.TestCase):
 
 #==============================================================================
 @attr(integration='elasticsearch')
-class IntegrationElasticsearchSearch(unittest.TestCase):
+class IntegrationElasticsearchSearch(ElasticSearchTestCase):
     """Test search with an elasticsearch database containing fake data. """
 
     def setUp(self):
+        super(IntegrationElasticsearchSearch, self).setUp()
+
         with self.get_config_manager().context() as config:
             self.storage = crashstorage.ElasticSearchCrashStorage(config)
 
@@ -262,6 +269,26 @@ class IntegrationElasticsearchSearch(unittest.TestCase):
             )
         )
 
+        self.storage.save_processed(
+            dict(
+                default_crash_report,
+                uuid=13,
+                product='EarlyOwl',
+                version='11.0b1',
+                release_channel='beta',
+            )
+        )
+
+        self.storage.save_processed(
+            dict(
+                default_crash_report,
+                uuid=14,
+                product='EarlyOwl',
+                version='11.0b2',
+                release_channel='beta',
+            )
+        )
+
         # As indexing is asynchronous, we need to force elasticsearch to
         # make the newly created content searchable before we run the tests
         self.storage.es.refresh()
@@ -275,7 +302,7 @@ class IntegrationElasticsearchSearch(unittest.TestCase):
         mock_logging = mock.Mock()
 
         required_config = \
-            crashstorage.ElasticSearchCrashStorage.required_config
+            crashstorage.ElasticSearchCrashStorage.get_required_config()
         required_config.add_option('logger', default=mock_logging)
 
         webapi = Namespace()
@@ -284,14 +311,16 @@ class IntegrationElasticsearchSearch(unittest.TestCase):
         for opt in [
             'elasticSearchHostname',
             'elasticSearchPort',
+            'elasticsearch_urls',
             'elasticsearch_index',
             'elasticsearch_doctype',
+            'elasticsearch_timeout',
             'searchMaxNumberOfDistinctSignatures',
             'platforms',
-            'channels',
+            'non_release_channels',
             'restricted_channels',
         ]:
-            webapi[opt] = getattr(commonconfig, opt).default
+            webapi[opt] = self.config.get(opt)
 
         required_config.webapi = webapi
 
@@ -302,8 +331,9 @@ class IntegrationElasticsearchSearch(unittest.TestCase):
             app_description='app description',
             values_source_list=[{
                 'logger': mock_logging,
-                'elasticsearch_urls': commonconfig.elasticsearch_urls.default,
                 'elasticsearch_index': webapi.elasticsearch_index,
+                'elasticsearch_urls': webapi.elasticsearch_urls,
+                'backoff_delays': [1, 2],
             }]
         )
 
@@ -328,7 +358,7 @@ class IntegrationElasticsearchSearch(unittest.TestCase):
                 res['hits'][1]['signature'],
                 'my_bad'
             )
-            self.assertEqual(res['hits'][0]['is_linux'], 10)
+            self.assertEqual(res['hits'][0]['is_linux'], 12)
             self.assertEqual(res['hits'][0]['is_windows'], 1)
             self.assertEqual(res['hits'][0]['is_mac'], 0)
 
@@ -635,3 +665,61 @@ class IntegrationElasticsearchSearch(unittest.TestCase):
             self.assertEqual(hit['pluginname'], 'Hey I just met you')
             self.assertEqual(hit['pluginfilename'], 'carly.dll')
             self.assertEqual(hit['pluginversion'], '1.2')
+
+    @mock.patch('socorro.external.elasticsearch.search.Util')
+    def test_search_versions(self, mock_psql_util):
+        mock_psql_util.return_value.versions_info.return_value = {
+            'EarlyOwl:11.0b1': {
+                'product_version_id': 1,
+                'product_name': 'EarlyOwl',
+                'version_string': '11.0b1',
+                'major_version': '11.0b1',
+                'release_channel': 'Beta',
+                'build_id': [1234567890],
+                'is_rapid_beta': False,
+                'is_from_rapid_beta': True,
+                'from_beta_version': 'EarlyOwl:11.0b',
+            },
+            'EarlyOwl:11.0b2': {
+                'product_version_id': 2,
+                'product_name': 'EarlyOwl',
+                'version_string': '11.0b2',
+                'major_version': '11.0b1',
+                'release_channel': 'Beta',
+                'build_id': [1234567890],
+                'is_rapid_beta': False,
+                'is_from_rapid_beta': True,
+                'from_beta_version': 'EarlyOwl:11.0b',
+            },
+            'EarlyOwl:11.0b': {
+                'product_version_id': 3,
+                'product_name': 'EarlyOwl',
+                'version_string': '11.0b',
+                'major_version': '11.0',
+                'release_channel': 'Beta',
+                'build_id': None,
+                'is_rapid_beta': True,
+                'is_from_rapid_beta': True,
+                'from_beta_version': 'EarlyOwl:11.0b',
+            }
+        }
+
+        with self.get_config_manager().context() as config:
+            api = Search(config=config)
+
+            # Get all from the different beta versions
+            params = dict(
+                versions=['EarlyOwl:11.0b1', 'EarlyOwl:11.0b2'],
+            )
+            res1 = api.get(**params)
+            self.assertEqual(res1['total'], 1)
+
+            # Get all from the rapid beta alias
+            params = dict(
+                versions='EarlyOwl:11.0b',
+            )
+            res2 = api.get(**params)
+            self.assertEqual(res2['total'], 1)
+
+            # The results should be identical
+            self.assertEqual(res1, res2)

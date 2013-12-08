@@ -1,4 +1,4 @@
-/*jslint Panels:true */
+/* globals Panels, $, SocReport, socSortCorrelation */
 
 var Correlations = (function() {
     var loaded = null;
@@ -22,9 +22,13 @@ var Correlations = (function() {
 
         function loadByType(type) {
             $.getJSON(makeUrl(type), function(data) {
-                $('#' + type + '_correlation').html('<h3>' + data.reason +
-                    '</h3><pre>'+ data.load + '</pre>');
-                socSortCorrelation('#' + type + '_correlation');
+                if(data) {
+                    $('#' + type + '_correlation').html('<h3>' + data.reason +
+                        '</h3><pre>'+ data.load + '</pre>');
+                    socSortCorrelation('#' + type + '_correlation');
+                } else {
+                    $('#' + type + '_correlation').text('No correlation data found.');
+                }
             });
         }
 
@@ -61,9 +65,24 @@ var Correlations = (function() {
                $('button.load-version-data').click(function () {
                    var type = $(this).attr('name');
                    var makeUrl = urlMaker(version, os);
+                   var spinner = $('<img />', {
+                      id: 'loading-spinner',
+                      src: '/static/img/loading.png',
+                      width: '16',
+                      height: '17',
+                      alt: 'loading spinner'
+                   });
+                   var contentPanel = $('#' + type + '-panel');
+
+                   contentPanel.empty().append(['Loading ', spinner]);
+
                    $.getJSON(makeUrl(type), function(data) {
-                       $('#' + type + '-panel').html('<h3>' + data.reason + '</h3><pre>' +
-                                                     data.load + '</pre>');
+                       if (data) {
+                         contentPanel.html('<h3>' + data.reason + '</h3><pre>' +
+                                                       data.load + '</pre>');
+                       } else {
+                          contentPanel.text('No correlation data found.');
+                      }
                    });
                });
                if (version && os) {

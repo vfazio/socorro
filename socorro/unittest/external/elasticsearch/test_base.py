@@ -90,7 +90,7 @@ class TestElasticSearchBase(unittest.TestCase):
                 "name": "Linux"
             }
         )
-        context.channels = ['beta', 'aurora', 'nightly']
+        context.non_release_channels = ['beta', 'aurora', 'nightly']
         context.restricted_channels = ['beta']
         return context
 
@@ -122,9 +122,11 @@ class TestElasticSearchBase(unittest.TestCase):
         filtered = query["query"]["filtered"]
         self.assertTrue("query" in filtered)
         self.assertTrue("wildcard" in filtered["query"])
-        self.assertTrue("dump" in filtered["query"]["wildcard"])
+        self.assertTrue(
+            "processed_crash.dump" in filtered["query"]["wildcard"]
+        )
 
-        dump_term = filtered["query"]["wildcard"]["dump"]
+        dump_term = filtered["query"]["wildcard"]["processed_crash.dump"]
         self.assertEqual(dump_term, "*hang*")
         self.assertTrue("filter" in filtered)
         self.assertTrue("and" in filtered["filter"])
@@ -135,13 +137,17 @@ class TestElasticSearchBase(unittest.TestCase):
             "versions": "WaterWolf:1.0a1"
         }
         params = scommon.get_parameters(params)
-        params['versions_info'] = {
-            'WaterWolf:1.0a1': {
+        params["versions_info"] = {
+            "WaterWolf:1.0a1": {
+                "product_version_id": 1,
                 "version_string": "1.0a1",
                 "product_name": "WaterWolf",
                 "major_version": "1.0a1",
                 "release_channel": "nightly-water",
-                "build_id": None
+                "build_id": None,
+                "is_rapid_beta": False,
+                "is_from_rapid_beta": False,
+                "from_beta_version": "WaterWolf:1.0a1",
             }
         }
         query = ElasticSearchBase.build_query_from_params(params, config)
@@ -165,7 +171,10 @@ class TestElasticSearchBase(unittest.TestCase):
                 "product_name": "WaterWolf",
                 "major_version": "2.0",
                 "release_channel": None,
-                "build_id": None
+                "build_id": None,
+                "is_rapid_beta": False,
+                "is_from_rapid_beta": False,
+                "from_beta_version": "WaterWolf:2.0",
             }
         }
         query = ElasticSearchBase.build_query_from_params(params, config)
@@ -187,20 +196,22 @@ class TestElasticSearchBase(unittest.TestCase):
         #......................................................................
         # Single term, single field query
         fields = "signature"
+        prefixed_field = "processed_crash.signature"
         terms = "hang"
         query = ElasticSearchBase.build_terms_query(fields, terms)
         self.assertTrue("term" in query)
-        self.assertTrue(fields in query["term"])
-        self.assertEqual(query["term"][fields], terms)
+        self.assertTrue(prefixed_field in query["term"])
+        self.assertEqual(query["term"][prefixed_field], terms)
 
         #......................................................................
         # Multiple terms, single field query
         fields = "signature"
+        prefixed_field = "processed_crash.signature"
         terms = ["hang", "flash", "test"]
         query = ElasticSearchBase.build_terms_query(fields, terms)
         self.assertTrue("terms" in query)
-        self.assertTrue(fields in query["terms"])
-        self.assertEqual(query["terms"][fields], terms)
+        self.assertTrue(prefixed_field in query["terms"])
+        self.assertEqual(query["terms"][prefixed_field], terms)
 
         #......................................................................
         # Multiple terms, multiple fields query
@@ -209,8 +220,9 @@ class TestElasticSearchBase(unittest.TestCase):
         query = ElasticSearchBase.build_terms_query(fields, terms)
         self.assertTrue("terms" in query)
         for field in fields:
-            self.assertTrue(field in query["terms"])
-            self.assertEqual(query["terms"][field], terms)
+            prefixed_field = "processed_crash.%s" % field
+            self.assertTrue(prefixed_field in query["terms"])
+            self.assertEqual(query["terms"][prefixed_field], terms)
 
     #--------------------------------------------------------------------------
     def test_build_wildcard_query(self):
@@ -226,17 +238,21 @@ class TestElasticSearchBase(unittest.TestCase):
         terms = "hang"
         query = ElasticSearchBase.build_wildcard_query(fields, terms)
         self.assertTrue("wildcard" in query)
-        self.assertTrue("signature.full" in query["wildcard"])
-        self.assertEqual(query["wildcard"]["signature.full"], terms)
+        self.assertTrue("processed_crash.signature.full" in query["wildcard"])
+        self.assertEqual(
+            query["wildcard"]["processed_crash.signature.full"],
+            terms
+        )
 
         #......................................................................
         # Multiple terms, single field query
         fields = "dump"
+        prefixed_field = "processed_crash.dump"
         terms = ["hang", "flash", "test"]
         query = ElasticSearchBase.build_wildcard_query(fields, terms)
         self.assertTrue("wildcard" in query)
-        self.assertTrue(fields in query["wildcard"])
-        self.assertEqual(query["wildcard"][fields], terms)
+        self.assertTrue(prefixed_field in query["wildcard"])
+        self.assertEqual(query["wildcard"][prefixed_field], terms)
 
         #......................................................................
         # Multiple terms, multiple fields query
@@ -245,8 +261,9 @@ class TestElasticSearchBase(unittest.TestCase):
         query = ElasticSearchBase.build_wildcard_query(fields, terms)
         self.assertTrue("wildcard" in query)
         for field in fields:
-            self.assertTrue(field in query["wildcard"])
-            self.assertEqual(query["wildcard"][field], terms)
+            prefixed_field = "processed_crash.%s" % field
+            self.assertTrue(prefixed_field in query["wildcard"])
+            self.assertEqual(query["wildcard"][prefixed_field], terms)
 
     #--------------------------------------------------------------------------
     def test_format_versions(self):
